@@ -250,6 +250,40 @@ export async function restoreFromModel(dataUrl: string, crop: { x: number; y: nu
   return { url: c.toDataURL('image/png'), w: target.w, h: target.h };
 }
 
+/**
+ * 올라온 이미지가 참고 사진인지, 종이에 그린 그림인지 구분한다.
+ * 사진: 채도 높은 픽셀이 2% 넘거나(옷·피부·배경 색), 종이 밝기 대비 아주 어두운 영역이 4% 넘음(머리카락·신발·그림자).
+ * 그림: 종이 위 얇은 선이라 둘 다 거의 없음. 예시에서 사진은 6.8%·8.1%, 크로키·선화는 0%·1% 안팎.
+ */
+export async function classifyImage(src: Img): Promise<'photo' | 'drawing'> {
+  const img = await loadImage(src.url);
+  const S = 160, k = S / Math.max(src.w, src.h);
+  const w = Math.max(1, Math.round(src.w * k)), h = Math.max(1, Math.round(src.h * k));
+  const { ctx } = canvas(w, h);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(img, 0, 0, w, h);
+  const d = ctx.getImageData(0, 0, w, h).data, n = w * h;
+  const lum = new Float32Array(n);
+  let sat = 0;
+  for (let i = 0; i < n; i++) {
+    const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2];
+    lum[i] = 0.299 * r + 0.587 * g + 0.114 * b;
+    if ((Math.max(r, g, b) - Math.min(r, g, b)) / 255 > 0.25) sat++;
+  }
+  // 주변에서 가장 밝은 값 = 종이(배경) 밝기로 보고 나눔 → 그림자 진 종이도 공정하게 비교
+  const R = 12;
+  let dark = 0;
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      let m = 0;
+      for (let yy = Math.max(0, y - R); yy <= Math.min(h - 1, y + R); yy += 3)
+        for (let xx = Math.max(0, x - R); xx <= Math.min(w - 1, x + R); xx += 3) m = Math.max(m, lum[yy * w + xx]);
+      if (lum[y * w + x] / Math.max(1, m) < 0.35) dark++;
+    }
+  return sat / n > 0.02 || dark / n > 0.04 ? 'photo' : 'drawing';
+}
+
 /** data URL → API에 보낼 base64 + 미디어 타입 */
 export function toBase64(img: Img): { media_type: 'image/png' | 'image/jpeg'; data: string } {
   const [head, data] = img.url.split(',', 2);

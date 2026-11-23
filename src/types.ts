@@ -60,4 +60,3 @@ export interface CritiqueSettings {
   extract: 'ai' | 'local';
 }
 
-export type Step = 1 | 2;
