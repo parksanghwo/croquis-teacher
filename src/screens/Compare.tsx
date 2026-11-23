@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as RPointerEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as RPointerEvent } from 'react';
 import type { Feedback, Img, Issue, Piece, Pt } from '../types';
 import { ArrowRightIcon, MinusIcon, PlusIcon } from '../components/Icons';
 import { CorrectionLayer } from '../components/CorrectionLayer';
 import { PieceLayer } from '../components/PieceLayer';
-import { bounds, clipPoly, inPoly, ringOf, spread } from '../lib/geometry';
+import { bounds, clipPoly, inPoly, ringOf, stack } from '../lib/geometry';
 
 interface Props {
   photo: Img;
@@ -26,15 +26,24 @@ const SHEET_H = 700;
 const MAX_BOX_H = 640;
 const MAX_BOX_W = 460;
 const NOTE_GAP = 28;
+const NOTE_W = 260;
+const NOTE_PAD = 10;
+/** 측정 전 메모 높이 추정값 */
+const NOTE_H = 96;
+type View = { z: number; tx: number; ty: number };
 const LEFT_H = 600;
 const LEFT_MAX_W = 400;
-const clampZ = (z: number) => Math.max(0.6, Math.min(3, Math.round(z * 10) / 10));
+const clampZ = (z: number, min = 0.6) => Math.max(min, Math.min(3, Math.round(z * 10) / 10));
 
 export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, lineArtInk, lineArtRed, feedback, extras, regionError, onDropPiece, onNext }: Props) {
   const [trace, setTrace] = useState(true);
   const [showPhoto, setShowPhoto] = useState(false);
   const [overlay, setOverlay] = useState(false);
-  const [view, setView] = useState({ z: 1, tx: 0, ty: 0 });
+  // null = 전체 보기 (메모까지 모두 들어오게 자동으로 맞춤)
+  const [view, setView] = useState<View | null>(null);
+  const [heights, setHeights] = useState<Record<string, number>>({});
+  const noteEls = useRef(new Map<string, HTMLDivElement>());
+  const fitRef = useRef<View>({ z: 1, tx: 0, ty: 0 });
   const [sel, setSel] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [off, setOff] = useState<Record<string, boolean>>({});
@@ -55,8 +64,25 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
     setOff({});
     setSel(null);
     setSelPoly(null);
-    setView({ z: 1, tx: 0, ty: 0 });
+    setView(null);
   }, [feedback]);
+
+  // 메모 실제 높이 재기 (줄바꿈·창 크기에 따라 달라짐)
+  const measure = () => {
+    const next: Record<string, number> = {};
+    noteEls.current.forEach((el, id) => (next[id] = el.offsetHeight));
+    setHeights((prev) => {
+      const keys = Object.keys(next);
+      const same = keys.length === Object.keys(prev).length && keys.every((k) => Math.abs((prev[k] ?? 0) - next[k]) < 1);
+      return same ? prev : next;
+    });
+  };
+  useLayoutEffect(measure);
+  useEffect(() => {
+    const ro = new ResizeObserver(() => measure());
+    noteEls.current.forEach((el) => ro.observe(el));
+    return () => ro.disconnect();
+  });
 
   // Ctrl/⌘ + 휠 확대 (passive: false 필요)
   useEffect(() => {
@@ -69,8 +95,9 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
       const ox = e.clientX - (r.left + r.width / 2), oy = e.clientY - (r.top + r.height / 2);
       wheelAt.current = Date.now();
       setSel(null);
-      setView((v) => {
-        const z2 = Math.max(0.6, Math.min(3, v.z * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+      setView((cur) => {
+        const v = cur ?? fitRef.current;
+        const z2 = Math.max(Math.min(0.6, fitRef.current.z), Math.min(3, v.z * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
         return { z: z2, tx: v.tx + ox / z2 - ox / v.z, ty: v.ty + oy / z2 - oy / v.z };
       });
     };
@@ -101,11 +128,25 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
     const ny = new Array<number>(base.length);
     for (const side of [true, false]) {
       const idx = base.map((b, i) => (b.L === side ? i : -1)).filter((i) => i >= 0);
-      const ys = spread(idx.map((i) => base[i].py - 15), 78, 8, SHEET_H - 90);
+      const ys = stack(
+        idx.map((i) => ({ y: base[i].py - 15, h: heights[base[i].it.id] ?? NOTE_H })),
+        NOTE_PAD,
+        8,
+        SHEET_H - 8,
+      );
       idx.forEach((i, k) => (ny[i] = ys[k]));
     }
-    return base.map((b, i) => ({ ...b, ny: ny[i] }));
-  }, [feedback, extras, BW, BH, BX, BY]);
+    return base.map((b, i) => ({ ...b, ny: ny[i], h: heights[b.it.id] ?? NOTE_H }));
+  }, [feedback, extras, heights, BW, BH, BX, BY]);
+
+  // 메모가 시트 밖으로 넘치면 전체 보기를 그만큼 축소
+  const top = Math.min(BY, ...parts.map((p) => p.ny));
+  const bottom = Math.max(BY + BH, ...parts.map((p) => p.ny + p.h));
+  const fit: View =
+    top >= 0 && bottom <= SHEET_H
+      ? { z: 1, tx: 0, ty: 0 }
+      : { z: Math.max(0.4, Math.min(1, SHEET_H / (bottom - top + 24))), tx: 0, ty: SHEET_H / 2 - (top + bottom) / 2 };
+  fitRef.current = fit;
   const pendings = extras
     .filter((it) => it.pending)
     .map((it) => {
@@ -113,7 +154,7 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
       return { id: it.id, px: BX + ring.cx, py: BY + ring.cy, r: ring.r };
     });
 
-  const { z, tx, ty } = view;
+  const { z, tx, ty } = view ?? fit;
   let active: string | null = null;
   if (z >= 1.2) {
     const live = parts.filter((p) => isOn(p.it.id));
@@ -204,7 +245,7 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
   const selShown = lasso ?? selPoly;
   const leftHint = !trace ? '기준 선화를 켜면 올가미로 고를 수 있어요' : selPoly ? '고른 부분을 끌어서 내 크로키 위에 놓으세요' : '기준 선화 위를 드래그해서 올가미로 고르기';
   const ghostBox = ghost && selPoly ? bounds(selPoly) : null;
-  const fit: CSSProperties['objectFit'] = aligned ? 'fill' : 'contain';
+  const objFit: CSSProperties['objectFit'] = aligned ? 'fill' : 'contain';
 
   const onDown = (e: RPointerEvent<HTMLDivElement>) => {
     if ((e.target as HTMLElement).closest('button')) return;
@@ -215,7 +256,10 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
   const onMove = (e: RPointerEvent<HTMLDivElement>) => {
     const d = drag.current;
     if (!d) return;
-    setView((v) => ({ ...v, tx: d.tx + (e.clientX - d.x) / v.z, ty: d.ty + (e.clientY - d.y) / v.z }));
+    setView((cur) => {
+      const v = cur ?? fitRef.current;
+      return { ...v, tx: d.tx + (e.clientX - d.x) / v.z, ty: d.ty + (e.clientY - d.y) / v.z };
+    });
   };
   const onUp = () => {
     if (drag.current) {
@@ -319,24 +363,24 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
                 className="zoom__btn"
                 aria-label="축소"
                 onClick={() => {
-                  const nz = clampZ(z - 0.4);
-                  if (nz <= 1) {
-                    setView({ z: nz, tx: 0, ty: 0 });
+                  const nz = clampZ(z - 0.4, Math.min(0.6, fit.z));
+                  if (nz <= fit.z) {
+                    setView(null);
                     setSel(null);
-                  } else setView({ ...view, z: nz });
+                  } else setView({ z: nz, tx, ty });
                 }}
               >
                 <MinusIcon />
               </button>
               <span className="zoom__label">{Math.round(z * 100)}%</span>
-              <button type="button" className="zoom__btn" aria-label="확대" onClick={() => setView({ ...view, z: clampZ(z + 0.4) })}>
+              <button type="button" className="zoom__btn" aria-label="확대" onClick={() => setView({ z: clampZ(z + 0.4), tx, ty })}>
                 <PlusIcon />
               </button>
               <button
                 type="button"
                 className="zoom__fit"
                 onClick={() => {
-                  setView({ z: 1, tx: 0, ty: 0 });
+                  setView(null);
                   setSel(null);
                 }}
               >
@@ -370,7 +414,7 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
               <div style={{ position: 'absolute', left: `calc(50% + ${BX}px)`, top: BY, width: BW, height: BH }}>
                 <img src={croquisInk} alt="내 크로키" draggable={false} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }} />
                 {overlay && (
-                  <img src={lineArtInk} alt="" draggable={false} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: fit, opacity: 0.3, pointerEvents: 'none' }} />
+                  <img src={lineArtInk} alt="" draggable={false} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: objFit, opacity: 0.3, pointerEvents: 'none' }} />
                 )}
                 <CorrectionLayer issues={visible} />
                 <PieceLayer issues={visibleExtras} redLineArt={lineArtRed} />
@@ -416,12 +460,16 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
                 return (
                   <div
                     key={id}
+                    ref={(el) => {
+                      if (el) noteEls.current.set(id, el);
+                      else noteEls.current.delete(id);
+                    }}
                     style={{
                       position: 'absolute',
                       top: p.ny,
                       minWidth: 80,
                       [p.L ? 'right' : 'left']: `calc(50% + ${p.L ? -p.e : p.e}px)`,
-                      width: `min(220px, calc(50% - ${dist}px - 6px))`,
+                      width: `min(${NOTE_W}px, calc(50% - ${dist}px - 6px))`,
                       display: 'flex',
                       flexDirection: p.L ? 'row-reverse' : 'row',
                       zIndex: isActive ? 2 : undefined,
@@ -442,7 +490,7 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
                       onClick={() => {
                         if (sel === id) {
                           setSel(null);
-                          setView({ z: 1, tx: 0, ty: 0 });
+                          setView(null);
                           return;
                         }
                         const mx = (p.px + (p.L ? p.e - 80 : p.e + 80)) / 2;
@@ -457,7 +505,7 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
                       </span>
                       {shown && <span className="note-fix">{p.it.fix}</span>}
                       {shown && (
-                        <span style={{ position: 'relative', display: 'block', width: '100%', maxWidth: 150, marginTop: 3 }}>
+                        <span style={{ position: 'relative', display: 'block', width: '100%', maxWidth: 150, minHeight: 52, marginTop: 3 }}>
                           <span
                             aria-hidden="true"
                             style={{

@@ -33,26 +33,6 @@ export function ringOf(it: Issue, boxW: number, boxH: number, minR = 16, maxR = 
   return { cx, cy, r: Math.max(minR, Math.min(maxR, span / 2 + 6)) };
 }
 
-/** 같은 쪽 메모가 겹치지 않도록 y를 아래로 밀어낸다 */
-export function spread(ys: number[], gap: number, min: number, max: number): number[] {
-  const order = ys.map((y, i) => ({ y, i })).sort((a, b) => a.y - b.y);
-  const out = new Array<number>(ys.length);
-  let prev = -Infinity;
-  for (const o of order) {
-    const y = Math.max(min, o.y, prev + gap);
-    out[o.i] = y;
-    prev = y;
-  }
-  // 아래로 넘치면 위로 되밀기
-  let next = Infinity;
-  for (let k = order.length - 1; k >= 0; k--) {
-    const i = order[k].i;
-    out[i] = Math.min(out[i], max, next - gap);
-    next = out[i];
-  }
-  return out;
-}
-
 /** 점들의 경계 상자 (0~1 좌표) */
 export function bounds(pts: Pt[]) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -74,3 +54,30 @@ export function inPoly(pt: Pt, poly: Pt[]) {
 
 /** 이미지(0~1 좌표) 위의 다각형을 CSS clip-path로 */
 export const clipPoly = (poly: Pt[]) => `polygon(${poly.map((p) => `${(p.x * 100).toFixed(2)}% ${(p.y * 100).toFixed(2)}%`).join(', ')})`;
+
+/**
+ * 높이가 제각각인 메모를 세로로 겹치지 않게 쌓는다.
+ * 원래 위치(y)에 최대한 가깝게, 아래가 max를 넘으면 위로 당기되 min보다 위로는 안 올린다.
+ * 공간이 모자라면 겹치는 대신 max 아래로 넘친다.
+ */
+export function stack(items: { y: number; h: number }[], pad: number, min: number, max: number): number[] {
+  const order = items.map((it, i) => ({ ...it, i })).sort((a, b) => a.y - b.y);
+  const out = new Array<number>(items.length);
+  let bottom = -Infinity;
+  for (const o of order) {
+    out[o.i] = Math.max(min, o.y, bottom + pad);
+    bottom = out[o.i] + o.h;
+  }
+  let limit = max;
+  for (let k = order.length - 1; k >= 0; k--) {
+    const o = order[k];
+    out[o.i] = Math.max(min, Math.min(out[o.i], limit - o.h));
+    limit = out[o.i] - pad;
+  }
+  bottom = -Infinity;
+  for (const o of order) {
+    out[o.i] = Math.max(out[o.i], bottom + pad);
+    bottom = out[o.i] + o.h;
+  }
+  return out;
+}

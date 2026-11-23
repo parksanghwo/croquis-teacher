@@ -3,7 +3,7 @@ import type { CritiqueSettings, Feedback, Img, Issue } from '../types';
 import { CorrectionLayer } from '../components/CorrectionLayer';
 import { PieceLayer } from '../components/PieceLayer';
 import { TrashIcon } from '../components/Icons';
-import { ringOf, spread } from '../lib/geometry';
+import { ringOf, stack } from '../lib/geometry';
 
 interface Props {
   croquis: Img;
@@ -40,8 +40,9 @@ export function ReportScreen({ croquis, croquisInk, lineArtRed, feedback, extras
   const tagY = new Array<number>(visible.length);
   for (const left of [true, false]) {
     const idx = rings.map((r, i) => ((r.cx < W / 2) === left ? i : -1)).filter((i) => i >= 0);
-    const ys = spread(idx.map((i) => rings[i].cy), 40, 22, H - 22);
-    idx.forEach((i, k) => (tagY[i] = ys[k]));
+    // 이름표 높이 44px, 위치는 가운데 기준
+    const ys = stack(idx.map((i) => ({ y: rings[i].cy - 22, h: 44 })), 4, 0, H);
+    idx.forEach((i, k) => (tagY[i] = ys[k] + 22));
   }
 
   const remove = (id: string) => {
