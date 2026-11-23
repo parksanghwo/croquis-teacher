@@ -60,3 +60,9 @@ export const UploadIcon = (p: SVGProps<SVGSVGElement>) => (
     <path d="M12 16V4M7 9l5-5 5 5M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3" />
   </svg>
 );
+export const PhoneIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p, 18)}>
+    <rect x="6" y="2.5" width="12" height="19" rx="2.5" />
+    <path d="M11 18h2" />
+  </svg>
+);

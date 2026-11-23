@@ -1,6 +1,25 @@
-import { useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { CritiqueSettings, Img } from '../types';
-import { ArrowRightIcon, CheckIcon, UploadIcon } from '../components/Icons';
+import { ArrowRightIcon, CheckIcon, PhoneIcon, UploadIcon } from '../components/Icons';
+import { PhoneUploadDialog } from '../components/PhoneUploadDialog';
+
+type Slot = 'photo' | 'lineArt' | 'croquis';
+const SLOT_LABEL: Record<Slot, string> = { photo: '원본 사진', lineArt: '기준 선화', croquis: '내 크로키' };
+const canReadClipboard = typeof navigator !== 'undefined' && !!navigator.clipboard && 'read' in navigator.clipboard;
+
+/** 클립보드 이벤트에서 이미지 파일 꺼내기 */
+function imageFromPaste(e: ClipboardEvent): File | null {
+  const dt = e.clipboardData;
+  if (!dt) return null;
+  for (const f of Array.from(dt.files)) if (f.type.startsWith('image/')) return f;
+  for (const it of Array.from(dt.items)) {
+    if (it.kind === 'file' && it.type.startsWith('image/')) {
+      const f = it.getAsFile();
+      if (f) return f;
+    }
+  }
+  return null;
+}
 
 export const TIMES = ['30초', '1분', '3분', '5분', '자유'];
 export const FOCUS = ['비례', '관절 각도', '옷 주름', '실루엣', '신발·손'];
@@ -83,6 +102,90 @@ const Working = ({ children }: { children: ReactNode }) => (
 export function UploadScreen(p: Props) {
   const s = p.settings;
   const ready = !!(p.photo && p.lineArt && p.croquis) && !p.busy.photo && !p.busy.croquis;
+  const [hovered, setHovered] = useState<Slot | null>(null);
+  const [phoneSlot, setPhoneSlot] = useState<Slot | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const put = (slot: Slot, f: File) => {
+    setNotice(null);
+    if (slot === 'photo') p.onPhoto(f);
+    else if (slot === 'croquis') p.onCroquis(f);
+    else if (p.photo) p.onLineArt(f);
+  };
+  // 마우스를 올린 칸이 우선, 아니면 비어 있는 칸
+  const pasteTarget = (): Slot | null => {
+    if (hovered && (hovered !== 'lineArt' || p.photo)) return hovered;
+    if (!p.photo) return 'photo';
+    if (!p.croquis) return 'croquis';
+    return null;
+  };
+  const latest = useRef({ pasteTarget, put });
+  latest.current = { pasteTarget, put };
+
+  // Ctrl/⌘+V로 이미지 붙여넣기
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      // 글자 입력 중이거나 다른 창이 떠 있으면 건드리지 않음
+      const el = e.target instanceof Element ? e.target : null;
+      if (el?.closest('input, textarea, [contenteditable="true"]') || document.querySelector('dialog[open]')) return;
+      const file = imageFromPaste(e);
+      if (!file) {
+        setNotice('클립보드에 이미지가 없어요. 이미지를 복사한 뒤 다시 붙여넣어 주세요.');
+        return;
+      }
+      e.preventDefault();
+      const slot = latest.current.pasteTarget();
+      if (!slot) {
+        setNotice('어느 칸에 넣을지 정해 주세요. 바꿀 칸 위에 마우스를 올리고 다시 붙여넣으면 돼요.');
+        return;
+      }
+      latest.current.put(slot, file);
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, []);
+
+  // 붙여넣기 버튼 (Clipboard API)
+  const pasteInto = async (slot: Slot) => {
+    try {
+      const items = await navigator.clipboard.read();
+      for (const it of items) {
+        const type = it.types.find((t) => t.startsWith('image/'));
+        if (type) {
+          const blob = await it.getType(type);
+          put(slot, new File([blob], `pasted.${type.split('/')[1]}`, { type }));
+          return;
+        }
+      }
+      setNotice('클립보드에 이미지가 없어요. 이미지를 복사한 뒤 다시 눌러 주세요.');
+    } catch {
+      setNotice('브라우저가 클립보드 읽기를 막았어요. Ctrl+V(Mac은 ⌘+V)로 붙여넣어 주세요.');
+    }
+  };
+
+  const hover = (slot: Slot) => ({ onMouseEnter: () => setHovered(slot), onMouseLeave: () => setHovered((h) => (h === slot ? null : h)) });
+  const emptyActions = (slot: Slot, pickLabel: string) => (
+    <div className="drop__actions">
+      <FilePicker label={pickLabel} onFile={(f) => put(slot, f)} className="btn btn--dark" />
+      {canReadClipboard && (
+        <button type="button" className="btn" onClick={() => pasteInto(slot)}>
+          붙여넣기
+        </button>
+      )}
+      <button type="button" className="btn" onClick={() => setPhoneSlot(slot)}>
+        <PhoneIcon />
+        휴대폰으로
+      </button>
+    </div>
+  );
+  const headActions = (slot: Slot) => (
+    <div style={{ display: 'flex', gap: 6 }}>
+      <button type="button" className="btn icon-btn" aria-label={`휴대폰으로 ${SLOT_LABEL[slot]} 다시 보내기`} title="휴대폰으로" onClick={() => setPhoneSlot(slot)}>
+        <PhoneIcon />
+      </button>
+      <FilePicker label="교체" onFile={(f) => put(slot, f)} />
+    </div>
+  );
   const toggleFocus = (f: string) =>
     p.onSettings({ ...s, focus: s.focus.includes(f) ? s.focus.filter((x) => x !== f) : [...s.focus, f] });
 
@@ -98,11 +201,11 @@ export function UploadScreen(p: Props) {
       </div>
 
       <section aria-label="이미지 업로드" className="uploads">
-        <article className="card">
+        <article className="card" {...hover('photo')}>
           <div className="card__head">
             <span className="badge">1</span>
             <h2>원본 사진</h2>
-            {p.photo && <FilePicker label="교체" onFile={p.onPhoto} />}
+            {p.photo && headActions('photo')}
           </div>
           <DropArea
             img={p.photo}
@@ -111,8 +214,9 @@ export function UploadScreen(p: Props) {
             empty={
               <>
                 <UploadIcon />
-                참고한 사진을 끌어다 놓거나
-                <FilePicker label="사진 선택" onFile={p.onPhoto} className="btn btn--dark" />
+                참고한 사진을 올려 주세요
+                {emptyActions('photo', '사진 선택')}
+                <span className="paste-hint">끌어다 놓기 · Ctrl+V 붙여넣기도 돼요</span>
               </>
             }
           />
@@ -121,7 +225,7 @@ export function UploadScreen(p: Props) {
           </div>
         </article>
 
-        <article className="card">
+        <article className="card" {...hover('lineArt')}>
           <div className="card__head">
             <span className="badge badge--accent">
               <PencilBadge />
@@ -142,11 +246,11 @@ export function UploadScreen(p: Props) {
           </div>
         </article>
 
-        <article className="card">
+        <article className="card" {...hover('croquis')}>
           <div className="card__head">
             <span className="badge">2</span>
             <h2>내 크로키</h2>
-            {p.croquis && <FilePicker label="교체" onFile={p.onCroquis} />}
+            {p.croquis && headActions('croquis')}
           </div>
           <DropArea
             img={p.croquis}
@@ -156,8 +260,9 @@ export function UploadScreen(p: Props) {
             empty={
               <>
                 <UploadIcon />
-                크로키 사진이나 스캔을 끌어다 놓거나
-                <FilePicker label="크로키 선택" onFile={p.onCroquis} className="btn btn--dark" />
+                종이에 그린 크로키를 찍거나 스캔해서 올려 주세요
+                {emptyActions('croquis', '크로키 선택')}
+                <span className="paste-hint">끌어다 놓기 · Ctrl+V 붙여넣기도 돼요</span>
               </>
             }
           />
@@ -206,6 +311,24 @@ export function UploadScreen(p: Props) {
           </label>
         </fieldset>
       </section>
+
+      {notice && (
+        <div className="alert" role="status">
+          {notice}
+          <button type="button" className="btn btn--sm" onClick={() => setNotice(null)}>
+            닫기
+          </button>
+        </div>
+      )}
+
+      <PhoneUploadDialog
+        target={phoneSlot ? SLOT_LABEL[phoneSlot] : null}
+        onFile={(f) => {
+          if (phoneSlot) put(phoneSlot, f);
+          setPhoneSlot(null);
+        }}
+        onClose={() => setPhoneSlot(null)}
+      />
 
       {p.error && (
         <div className="alert" role="alert">

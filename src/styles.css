@@ -193,3 +193,12 @@ a:hover { color: var(--accent-ink-hover); }
   .sheet--right { padding-left: 48px; }
   .sheet__margin { left: 32px; }
 }
+
+/* 휴대폰 업로드 */
+.dialog__body { padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+.qr { align-self: center; width: 220px; height: 220px; border: 1px solid var(--line); border-radius: 12px; padding: 8px; background: #fff; }
+.waiting { display: flex; align-items: center; gap: 8px; color: var(--ok); font-weight: 600; }
+.field select { min-height: 44px; padding: 0 12px; border: 1px solid var(--line-control); border-radius: 10px; font-size: 14px; font-weight: 400; background: #fff; font-family: inherit; }
+.drop__actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.icon-btn { width: 44px; padding: 0; }
+.paste-hint { font-size: 13px; color: var(--muted); }
