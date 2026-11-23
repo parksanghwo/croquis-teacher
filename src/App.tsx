@@ -6,7 +6,7 @@ import { UploadScreen } from './screens/Upload';
 import { CompareScreen } from './screens/Compare';
 import { ReportScreen } from './screens/Report';
 import { cleanPaper, crop, cutRegion, inkBounds, loadFile, toInk, traceLineArt } from './lib/image';
-import { describeError, MissingKeyError, requestCritique, requestRegionCritique } from './lib/claude';
+import { describeError, MissingKeyError, requestCritique, requestRegionCritique } from './lib/ai';
 import { getApiKey } from './lib/settings';
 
 interface Prepared {

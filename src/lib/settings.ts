@@ -1,7 +1,8 @@
-const KEY = 'croquis-teacher.apiKey';
-const MODEL = 'croquis-teacher.model';
+// 예전 Anthropic 키가 OpenAI로 전송되지 않도록 저장 이름을 새로 씀
+const KEY = 'croquis-teacher.openaiKey';
+const MODEL = 'croquis-teacher.openaiModel';
 
-export const DEFAULT_MODEL = 'claude-opus-5-5';
+export const DEFAULT_MODEL = 'gpt-6-luna';
 
 function read(k: string): string {
   try {

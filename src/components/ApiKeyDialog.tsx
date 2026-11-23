@@ -32,11 +32,11 @@ export function ApiKeyDialog({ open, onClose }: Props) {
           onClose(true);
         }}
       >
-        <h2 id="key-title">Anthropic API 키</h2>
-        <p>첨삭은 Claude가 해요. 키는 이 브라우저에만 저장되고, 요청은 브라우저에서 Anthropic API로 바로 가요.</p>
+        <h2 id="key-title">OpenAI API 키</h2>
+        <p>첨삭은 OpenAI 모델이 해요. 키는 이 브라우저에만 저장되고, 요청은 브라우저에서 OpenAI API로 바로 가요.</p>
         <label className="field">
           API 키
-          <input type="password" autoComplete="off" spellCheck={false} placeholder="sk-ant-…" value={key} onChange={(e) => setKey(e.target.value)} />
+          <input type="password" autoComplete="off" spellCheck={false} placeholder="sk-…" value={key} onChange={(e) => setKey(e.target.value)} />
         </label>
         <label className="field">
           모델
