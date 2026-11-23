@@ -118,8 +118,6 @@ a:hover { color: var(--accent-ink-hover); }
 .ws .linked.hl .paper { outline: 1.5px dashed var(--pen-soft); outline-offset: 4px; }
 .ws .paper { position: relative; background: #fff; border: 1px solid #ddd8cd; border-radius: 4px; }
 .ws .paper img { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; -webkit-user-drag: none; }
-.ws #trace-paper { cursor: crosshair; }
-.ws #trace-paper.has-sel { cursor: grab; }
 .ws .lasso { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .ws .lasso polygon { fill: rgba(211, 38, 62, 0.07); stroke: #d3263e; stroke-width: 1.5; stroke-dasharray: 5 4; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 
@@ -209,9 +207,6 @@ a:hover { color: var(--accent-ink-hover); }
 @media (prefers-reduced-motion: reduce) { .ws *, .ws { transition: none !important; animation: none !important; } }
 
 /* ───────── 한 화면 업로드 ───────── */
-.ws .placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; border: 2px dashed var(--ui-line); border-radius: 8px; background: color-mix(in srgb, var(--ui) 55%, transparent); color: var(--ui-mute); font: inherit; font-size: 14px; text-align: center; cursor: pointer; }
-.ws .placeholder b { color: var(--ui-ink); font-size: 17px; }
-.ws .placeholder:hover { border-color: #d3263e; color: var(--ui-ink); }
 .ws .working { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; font-size: 14px; font-weight: 600; color: #2f6b50; background: rgba(255, 255, 255, 0.55); }
 .ws .empty-hint { position: absolute; text-align: center; color: var(--ui-mute); font-size: 15px; pointer-events: none; }
 .ws .empty-hint .hand-note { margin: 0 0 6px; font-family: var(--hand); font-size: 40px; color: var(--pen-c); transform: rotate(-2deg); }
@@ -252,3 +247,28 @@ a:hover { color: var(--accent-ink-hover); }
   .ws .startbar__meta { display: none; }
   .ws .banner { top: 124px; }
 }
+
+/* ───────── 사진 → 그림 연결 ───────── */
+.ws .paper.linkable { cursor: alias; }
+.ws .paper.lassoable { cursor: crosshair; }
+.ws .paper.has-sel { cursor: grab; }
+.ws .links { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
+.ws .link { fill: none; stroke: #d3263e; stroke-width: 2.5; stroke-linecap: round; }
+.ws .link--draft { stroke-dasharray: 8 6; opacity: 0.8; }
+.ws .link--waiting, .ws .link--running { stroke-dasharray: 10 6; animation: dash 0.8s linear infinite; }
+.ws .link--error { stroke: #8a8478; }
+@keyframes dash { to { stroke-dashoffset: -16; } }
+.ws .link-badge { position: absolute; transform: translate(-50%, -50%); display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 12px; border-radius: 999px; background: var(--ui); color: var(--ui-ink); border: 1.5px solid #d3263e; font-size: 13px; font-weight: 600; white-space: nowrap; z-index: 2; }
+.ws .link-badge--done { border-color: #2f6b50; color: #2f6b50; }
+.ws .link-badge--error { border-color: #8a8478; color: var(--ui-mute); }
+.ws .link-badge button { width: 28px; height: 28px; border: 0; border-radius: 50%; background: color-mix(in srgb, var(--ui-ink) 7%, transparent); color: inherit; cursor: pointer; font-size: 14px; line-height: 1; }
+.ws .link-badge button:hover { background: color-mix(in srgb, var(--ui-ink) 14%, transparent); }
+.ws .link-badge .spinner { width: 14px; height: 14px; }
+.ws .port { position: absolute; right: -11px; top: 50%; width: 22px; height: 22px; margin-top: -11px; border-radius: 50%; background: #fff; border: 2.5px solid #d3263e; cursor: alias; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2); }
+.ws .port:hover { background: #fbe3e6; }
+.ws .sheet-card.link-target .paper { outline: 2px dashed #d3263e; outline-offset: 6px; }
+.ws .banner--hint { background: var(--ui); color: var(--ui-ink); border: 1px solid var(--ui-line); padding: 8px 14px; }
+.ws .drawer .group { list-style: none; }
+.ws .drawer .group > ol { list-style: none; margin: 0; padding: 0; }
+.ws .group__title { margin: 8px 10px 0; font-family: var(--hand); font-size: 26px; line-height: 36px; color: #1b1b1f; }
+.ws .group__pose { margin: 0 10px; font-family: var(--hand); font-size: 20px; line-height: 36px; color: #6b6760; }

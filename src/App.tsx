@@ -1,20 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import type { CritiqueSettings, Feedback, Img, Issue, Piece, Pt } from './types';
+import type { CritiqueSettings, Img, Item, Kind, Link, Piece, Pt } from './types';
 import { ApiKeyDialog } from './components/ApiKeyDialog';
 import { UploadDialog } from './components/UploadDialog';
-import { Workspace, type Kind } from './screens/Workspace';
-import { classifyImage, cleanPaper, crop, cutRegion, inkBounds, loadFile, toInk, traceLineArt } from './lib/image';
+import { Workspace } from './screens/Workspace';
+import { classifyImage, cleanPaper, crop, cutRegion, inkBounds, loadFile, toInk, traceLineArt, type Rect } from './lib/image';
 import { aiLineArt, aiPencilLines, describeError, MissingKeyError, requestCritique, requestRegionCritique } from './lib/ai';
 import { getApiKey } from './lib/settings';
-
-/** 첨삭에 쓴, 정렬된 이미지들 */
-interface Prepared {
-  photo: Img;
-  lineArt: Img;
-  croquis: Img;
-  aligned: boolean;
-  lineArtRed: string;
-}
 
 /** 클립보드 이벤트에서 이미지 파일 꺼내기 */
 function imagesFromPaste(e: ClipboardEvent): File[] {
@@ -28,15 +19,12 @@ function imagesFromPaste(e: ClipboardEvent): File[] {
     .filter((f): f is File => !!f);
 }
 
+let idSeq = 0;
+const newId = (p: string) => `${p}${++idSeq}`;
+
 export default function App() {
-  const [photo, setPhoto] = useState<Img | null>(null);
-  const [lineArt, setLineArt] = useState<Img | null>(null);
-  /** 보정 전 크로키 원본 (추출 방식을 바꾸거나 사진↔그림을 바꾸면 다시 추출) */
-  const [croquisRaw, setCroquisRaw] = useState<Img | null>(null);
-  const [croquis, setCroquis] = useState<Img | null>(null);
-  const [lineArtRed, setLineArtRed] = useState<string | null>(null);
-  const [source, setSource] = useState<{ lineArt?: 'ai' | 'local'; croquis?: 'ai' | 'local' }>({});
-  const [busy, setBusy] = useState<{ photo?: boolean; croquis?: boolean; critique?: boolean }>({});
+  const [items, setItems] = useState<Item[]>([]);
+  const [links, setLinks] = useState<Link[]>([]);
   const [banner, setBanner] = useState<string | null>(null);
   const [settings, setSettings] = useState<CritiqueSettings>({
     time: '1분',
@@ -46,55 +34,52 @@ export default function App() {
     detailedTone: false,
     extract: 'ai',
   });
-  const [prepared, setPrepared] = useState<Prepared | null>(null);
-  const [feedback, setFeedback] = useState<Feedback | null>(null);
-  const [extras, setExtras] = useState<Issue[]>([]);
-  const [regionError, setRegionError] = useState<string | null>(null);
-  const extraSeq = useRef(0);
-  const seq = useRef({ photo: 0, croquis: 0 });
   const [keyOpen, setKeyOpen] = useState(false);
-  const [uploadOpen, setUploadOpen] = useState(false);
+  const [upload, setUpload] = useState<{ open: boolean; at?: Pt }>({ open: false });
   const [hasKey, setHasKey] = useState(!!getApiKey());
-  const pendingStart = useRef(false);
-  const abort = useRef<AbortController | null>(null);
+  const itemSeq = useRef<Record<string, number>>({});
+  const running = useRef(new Map<string, AbortController>());
+  /** 진행 중인 첨삭을 멈추고 바로 다시 시작할 수 있게 비움 */
+  const stop = (linkId: string) => {
+    running.current.get(linkId)?.abort();
+    running.current.delete(linkId);
+  };
+  /** 키가 없을 때 키 입력 창은 연결할 때 한 번만 띄움 */
+  const keyAsked = useRef(false);
 
-  // 올가미 강조용 빨간 기준 선화
-  useEffect(() => {
-    let alive = true;
-    setLineArtRed(null);
-    if (lineArt) toInk(lineArt, [211, 38, 62]).then((u) => alive && setLineArtRed(u));
-    return () => {
-      alive = false;
-    };
-  }, [lineArt]);
+  const patchItem = (id: string, p: Partial<Item>) => setItems((xs) => xs.map((x) => (x.id === id ? { ...x, ...p } : x)));
+  const patchLink = (id: string, p: Partial<Link> | ((l: Link) => Partial<Link>)) =>
+    setLinks((ls) => ls.map((l) => (l.id === id ? { ...l, ...(typeof p === 'function' ? p(l) : p) } : l)));
 
-  /** 이미지가 바뀌면 이전 첨삭은 더 이상 맞지 않으니 지운다 */
-  const clearCritique = () => {
-    abort.current?.abort();
-    if (feedback) setBanner('이미지가 바뀌어서 이전 첨삭을 지웠어요. 다시 첨삭해 주세요.');
-    setFeedback(null);
-    setPrepared(null);
-    setExtras([]);
-    setRegionError(null);
+  /** 그 이미지가 들어간 연결은 다시 첨삭해야 한다 */
+  const resetLinksOf = (itemId: string) => {
+    setLinks((ls) =>
+      ls.map((l) => {
+        if (l.photoId !== itemId && l.drawingId !== itemId) return l;
+        stop(l.id);
+        return { ...l, status: 'waiting', feedback: undefined, prepared: undefined, extras: [], error: undefined };
+      }),
+    );
   };
 
   /**
-   * 선화 추출: AI(프롬프트 1·2, 이미지 모델) → 실패하거나 키가 없으면 브라우저 자동 트레이싱.
-   * 나중에 들어온 이미지가 먼저 끝나도 꼬이지 않게 순번으로 확인한다.
+   * 판별된 이미지 처리: 사진 → 기준 선화(프롬프트 1), 그림 → 연필선만(프롬프트 2).
+   * AI가 실패하거나 키가 없으면 브라우저 자동 트레이싱. 나중 작업이 먼저 끝나도 꼬이지 않게 순번 확인.
    */
-  async function extract(kind: 'photo' | 'croquis', src: Img, mode = settings.extract) {
-    const n = ++seq.current[kind];
-    const local = () => (kind === 'photo' ? traceLineArt(src) : cleanPaper(src));
-    setBusy((b) => ({ ...b, [kind]: true }));
+  async function processItem(id: string, kind: Kind, raw: Img, mode = settings.extract) {
+    const n = (itemSeq.current[id] = (itemSeq.current[id] ?? 0) + 1);
+    const stale = () => itemSeq.current[id] !== n;
+    patchItem(id, { kind, out: null, red: null, busy: true });
+    const local = () => (kind === 'photo' ? traceLineArt(raw) : cleanPaper(raw));
+    let out: Img;
+    let source: 'ai' | 'local' = 'local';
     try {
-      let out: Img;
-      let from: 'ai' | 'local' = 'local';
       if (mode === 'ai' && getApiKey()) {
         try {
-          out = kind === 'photo' ? await aiLineArt(src) : await aiPencilLines(src);
-          from = 'ai';
+          out = kind === 'photo' ? await aiLineArt(raw) : await aiPencilLines(raw);
+          source = 'ai';
         } catch (e) {
-          if (n !== seq.current[kind]) return;
+          if (stale()) return;
           setBanner(`AI ${kind === 'photo' ? '선화' : '연필선'} 추출에 실패해서 자동 트레이싱으로 대신했어요. (${describeError(e)})`);
           out = await local();
         }
@@ -102,78 +87,156 @@ export default function App() {
         if (mode === 'ai') setBanner('API 키가 없어서 자동 트레이싱으로 선을 땄어요. 키를 넣은 뒤 다시 올리면 AI로 추출해요.');
         out = await local();
       }
-      if (n !== seq.current[kind]) return;
-      if (kind === 'photo') setLineArt(out);
-      else setCroquis(out);
-      setSource((s) => ({ ...s, [kind === 'photo' ? 'lineArt' : 'croquis']: from }));
+      const red = kind === 'photo' ? await toInk(out, [211, 38, 62]) : null;
+      if (stale()) return;
+      patchItem(id, { out, red, source, busy: false });
     } catch (e) {
-      if (n === seq.current[kind]) setBanner(describeError(e));
-    } finally {
-      if (n === seq.current[kind]) setBusy((b) => ({ ...b, [kind]: false }));
+      if (stale()) return;
+      patchItem(id, { busy: false });
+      setBanner(describeError(e));
     }
   }
 
-  /** 사진은 원본 사진 칸에, 그림은 내 크로키 칸에 */
-  function place(kind: Kind, img: Img | null) {
-    if (kind === 'photo') {
-      seq.current.photo++;
-      setPhoto(img);
-      setLineArt(null);
-      setBusy((b) => ({ ...b, photo: false }));
-      if (img) void extract('photo', img);
-    } else {
-      seq.current.croquis++;
-      setCroquisRaw(img);
-      setCroquis(null);
-      setBusy((b) => ({ ...b, croquis: false }));
-      if (img) void extract('croquis', img);
-    }
-  }
-
-  /** 올라온 이미지를 사진/그림으로 자동 구분해서 넣는다 */
-  async function onFiles(files: File[]) {
+  /** 올린 이미지는 일단 같은 카드로 책상에 놓고, 그다음 사진인지 그림인지 판별해서 처리 */
+  async function onFiles(files: File[], at?: Pt) {
     setBanner(null);
-    let changed = false;
-    for (const f of files) {
+    for (const [i, f] of files.entries()) {
+      const id = newId('img');
       try {
-        const img = await loadFile(f);
-        const kind = await classifyImage(img);
-        if (!changed) clearCritique();
-        changed = true;
-        place(kind, img);
-        setBanner(kind === 'photo' ? '참고 사진으로 올렸어요. 그림이라면 카드 위 "그림이에요"를 눌러 주세요.' : '내 크로키로 올렸어요. 사진이라면 카드 위 "사진이에요"를 눌러 주세요.');
+        const raw = await loadFile(f);
+        const pos = at ? { x: at.x + i * 40, y: at.y + i * 40 } : undefined;
+        setItems((xs) => [...xs, { id, raw, kind: null, out: null, red: null, busy: true, at: pos }]);
+        const kind = await classifyImage(raw);
+        void processItem(id, kind, raw);
       } catch (e) {
+        setItems((xs) => xs.filter((x) => x.id !== id));
         setBanner(describeError(e));
       }
     }
   }
 
-  /** 자동 구분이 틀렸을 때: 사진 ↔ 그림 자리를 바꾼다 */
-  function onSwap() {
-    const a = photo, b = croquisRaw;
-    clearCritique();
-    place('photo', b);
-    place('drawing', a);
-    setBanner(null);
+  /** 판별이 틀렸을 때: 사진 ↔ 그림 */
+  function onSetKind(id: string, kind: Kind) {
+    const it = items.find((x) => x.id === id);
+    if (!it) return;
+    setLinks((ls) => ls.filter((l) => l.photoId !== id && l.drawingId !== id));
+    void processItem(id, kind, it.raw);
   }
 
-  function onRemove(kind: Kind) {
-    clearCritique();
-    place(kind, null);
+  function onRemove(id: string) {
+    itemSeq.current[id] = (itemSeq.current[id] ?? 0) + 1;
+    setLinks((ls) => {
+      ls.filter((l) => l.photoId === id || l.drawingId === id).forEach((l) => stop(l.id));
+      return ls.filter((l) => l.photoId !== id && l.drawingId !== id);
+    });
+    setItems((xs) => xs.filter((x) => x.id !== id));
+  }
+
+  /** 사진에서 그림으로 끌어 연결 → 첨삭 대기 (그림 하나엔 사진 하나만) */
+  function onLink(photoId: string, drawingId: string) {
+    setLinks((ls) => {
+      const same = ls.find((l) => l.photoId === photoId && l.drawingId === drawingId);
+      if (same) return ls;
+      ls.filter((l) => l.drawingId === drawingId).forEach((l) => stop(l.id));
+      keyAsked.current = false;
+      return [...ls.filter((l) => l.drawingId !== drawingId), { id: newId('link'), photoId, drawingId, status: 'waiting', extras: [] }];
+    });
+  }
+  function onUnlink(linkId: string) {
+    stop(linkId);
+    setLinks((ls) => ls.filter((l) => l.id !== linkId));
+  }
+  function onRetry(linkId: string) {
+    stop(linkId);
+    patchLink(linkId, { status: 'waiting', feedback: undefined, prepared: undefined, extras: [], error: undefined });
+  }
+
+  /** 3번 프롬프트: 기준 선화 A와 학생 크로키 B로 첨삭 */
+  async function runCritique(link: Link) {
+    const photo = items.find((x) => x.id === link.photoId), drawing = items.find((x) => x.id === link.drawingId);
+    if (!photo?.out || !drawing?.out || running.current.has(link.id)) return;
+    const ctrl = new AbortController();
+    running.current.set(link.id, ctrl);
+    patchLink(link.id, { status: 'running', error: undefined });
+    try {
+      let lineArt = photo.out, croquis = drawing.out;
+      let refRect: Rect | null = null;
+      if (settings.autoAlign) {
+        refRect = await inkBounds(photo.out);
+        lineArt = await crop(photo.out, refRect);
+        croquis = await crop(drawing.out, await inkBounds(drawing.out));
+      }
+      const fb = await requestCritique({ lineArt, croquis }, settings, ctrl.signal);
+      if (ctrl.signal.aborted) return;
+      const lineArtRed = await toInk(lineArt, [211, 38, 62]);
+      // 메모 id가 연결끼리 겹치지 않게
+      const feedback = { ...fb, issues: fb.issues.map((it) => ({ ...it, id: `${link.id}:${it.id}` })) };
+      patchLink(link.id, { status: 'done', feedback, prepared: { lineArt, croquis, lineArtRed, refRect }, extras: [] });
+    } catch (e) {
+      if (ctrl.signal.aborted) return;
+      if (e instanceof MissingKeyError) {
+        patchLink(link.id, { status: 'waiting' });
+        setKeyOpen(true);
+        return;
+      }
+      patchLink(link.id, { status: 'error', error: describeError(e) });
+      setBanner(`첨삭하지 못했어요. ${describeError(e)}`);
+    } finally {
+      if (running.current.get(link.id) === ctrl) running.current.delete(link.id);
+    }
+  }
+
+  // 연결됐고 두 이미지가 준비되면 첨삭 시작 (키가 없으면 키부터)
+  const runRef = useRef(runCritique);
+  runRef.current = runCritique;
+  useEffect(() => {
+    for (const l of links) {
+      if (l.status !== 'waiting' || running.current.has(l.id)) continue;
+      const ph = items.find((x) => x.id === l.photoId), dr = items.find((x) => x.id === l.drawingId);
+      if (!ph?.out || !dr?.out || ph.busy || dr.busy) continue;
+      if (!getApiKey()) {
+        if (!keyAsked.current) {
+          keyAsked.current = true;
+          setKeyOpen(true);
+          setBanner('API 키를 넣으면 연결한 사진과 그림으로 첨삭을 시작해요.');
+        }
+        continue;
+      }
+      void runRef.current(l);
+    }
+  }, [links, items, hasKey]);
+
+  /** 올가미로 고른 기준 선화 조각을 그림 위에 놓으면, 그 부위만 따로 첨삭 */
+  async function onDropPiece(linkId: string, piece: Piece, at: Pt) {
+    const link = links.find((l) => l.id === linkId);
+    if (!link?.prepared) return;
+    const prep = link.prepared;
+    const id = `${linkId}:pick-${newId('')}`;
+    patchLink(linkId, (l) => ({ extras: [...l.extras, { id, name: '', fix: '', why: '', how: '', x: at.x, y: at.y, strokes: [], piece, pending: true }] }));
+    try {
+      const region = await cutRegion(prep.lineArt, piece.poly, piece);
+      const r = await requestRegionCritique({ lineArt: prep.lineArt, region, croquis: prep.croquis }, { x: at.x, y: at.y, w: piece.w * 100, h: piece.h * 100 }, settings);
+      patchLink(linkId, (l) => ({ extras: l.extras.map((x) => (x.id === id ? { ...x, ...r, pending: false } : x)) }));
+    } catch (e) {
+      patchLink(linkId, (l) => ({ extras: l.extras.filter((x) => x.id !== id) }));
+      if (e instanceof MissingKeyError) setKeyOpen(true);
+      setBanner(`고른 부분을 첨삭하지 못했어요. ${describeError(e)}`);
+    }
   }
 
   function onSettings(next: CritiqueSettings) {
-    // 추출 방식을 바꾸면 이미 올린 이미지도 다시 추출
+    // 추출 방식을 바꾸면 올린 이미지를 다시 추출하고, 첨삭도 다시
     if (next.extract !== settings.extract) {
-      setBanner(null);
-      if (photo) void extract('photo', photo, next.extract);
-      if (croquisRaw) void extract('croquis', croquisRaw, next.extract);
-      clearCritique();
+      for (const it of items) {
+        if (!it.kind) continue;
+        resetLinksOf(it.id);
+        void processItem(it.id, it.kind, it.raw, next.extract);
+      }
     }
     setSettings(next);
   }
 
-  // Ctrl/⌘+V 붙여넣기 (글자 입력 중이거나 다른 창이 떠 있으면 건드리지 않음)
+  // Ctrl/⌘+V 붙여넣기 (글자 입력 중이거나 키 입력 창이 떠 있으면 건드리지 않음)
   const onFilesRef = useRef(onFiles);
   onFilesRef.current = onFiles;
   useEffect(() => {
@@ -183,119 +246,41 @@ export default function App() {
       const files = imagesFromPaste(e);
       if (!files.length) return;
       e.preventDefault();
-      setUploadOpen(false);
+      setUpload({ open: false });
       void onFilesRef.current(files);
     };
     window.addEventListener('paste', onPaste);
     return () => window.removeEventListener('paste', onPaste);
   }, []);
 
-  async function start() {
-    if (!photo || !lineArt || !croquis) return;
-    if (!getApiKey()) {
-      pendingStart.current = true;
-      setKeyOpen(true);
-      return;
-    }
-    setBanner(null);
-    setBusy((b) => ({ ...b, critique: true }));
-    const ctrl = new AbortController();
-    abort.current = ctrl;
-    try {
-      let imgs = { photo, lineArt, croquis };
-      if (settings.autoAlign) {
-        const refRect = await inkBounds(lineArt);
-        imgs = {
-          photo: await crop(photo, refRect),
-          lineArt: await crop(lineArt, refRect),
-          croquis: await crop(croquis, await inkBounds(croquis)),
-        };
-      }
-      // 3번 프롬프트: 기준 선화 A와 학생 크로키 B만 보낸다
-      const fb = await requestCritique({ lineArt: imgs.lineArt, croquis: imgs.croquis }, settings, ctrl.signal);
-      if (ctrl.signal.aborted) return;
-      setPrepared({ ...imgs, aligned: settings.autoAlign, lineArtRed: await toInk(imgs.lineArt, [211, 38, 62]) });
-      setExtras([]);
-      setRegionError(null);
-      setFeedback(fb);
-    } catch (e) {
-      if (ctrl.signal.aborted) return;
-      if (e instanceof MissingKeyError) setKeyOpen(true);
-      setBanner(describeError(e));
-    } finally {
-      if (abort.current === ctrl) abort.current = null;
-      setBusy((b) => ({ ...b, critique: false }));
-    }
-  }
-
-  /** 올가미로 고른 기준 선화 조각을 크로키 위에 놓으면, 그 부위만 따로 첨삭 받는다 */
-  async function onDropPiece(piece: Piece, at: Pt) {
-    if (!prepared) return;
-    const id = `pick-${++extraSeq.current}`;
-    setRegionError(null);
-    setExtras((xs) => [...xs, { id, name: '', fix: '', why: '', how: '', x: at.x, y: at.y, strokes: [], piece, pending: true }]);
-    try {
-      const region = await cutRegion(prepared.lineArt, piece.poly, piece);
-      const r = await requestRegionCritique(
-        { lineArt: prepared.lineArt, region, croquis: prepared.croquis },
-        { x: at.x, y: at.y, w: piece.w * 100, h: piece.h * 100 },
-        settings,
-      );
-      setExtras((xs) => xs.map((x) => (x.id === id ? { ...x, ...r, pending: false } : x)));
-    } catch (e) {
-      setExtras((xs) => xs.filter((x) => x.id !== id));
-      if (e instanceof MissingKeyError) setKeyOpen(true);
-      setRegionError(`고른 부분을 첨삭하지 못했어요. ${describeError(e)}`);
-      setBanner(`고른 부분을 첨삭하지 못했어요. ${describeError(e)}`);
-    }
-  }
-
-  // 첨삭 결과가 있으면 정렬된 이미지로, 없으면 올린 그대로 보여 준다
-  const view = prepared ?? { photo, lineArt, croquis, aligned: false, lineArtRed };
-
   return (
     <>
       <Workspace
-        photo={view.photo}
-        lineArt={view.lineArt}
-        croquis={view.croquis}
-        croquisRaw={croquisRaw}
-        lineArtRed={view.lineArtRed}
-        aligned={view.aligned}
-        busy={busy}
-        source={source}
-        feedback={feedback}
-        extras={extras}
-        regionError={regionError}
+        items={items}
+        links={links}
         banner={banner}
         settings={settings}
         hasKey={hasKey}
         onSettings={onSettings}
-        onStart={start}
-        onCancel={() => {
-          abort.current?.abort();
-          setBusy((b) => ({ ...b, critique: false }));
-        }}
-        onUpload={() => setUploadOpen(true)}
-        onFiles={(f) => void onFiles(f)}
-        onSwap={onSwap}
+        onUpload={(at) => setUpload({ open: true, at })}
+        onFiles={(f, at) => void onFiles(f, at)}
+        onSetKind={onSetKind}
         onRemove={onRemove}
+        onLink={onLink}
+        onUnlink={onUnlink}
+        onRetry={onRetry}
         onDropPiece={onDropPiece}
         onDismissBanner={() => setBanner(null)}
         onKey={() => setKeyOpen(true)}
       />
 
-      <UploadDialog open={uploadOpen} onFiles={(f) => void onFiles(f)} onClose={() => setUploadOpen(false)} />
+      <UploadDialog open={upload.open} onFiles={(f) => void onFiles(f, upload.at)} onClose={() => setUpload({ open: false })} />
 
       <ApiKeyDialog
         open={keyOpen}
-        onClose={(saved) => {
+        onClose={() => {
           setKeyOpen(false);
           setHasKey(!!getApiKey());
-          if (saved && pendingStart.current && getApiKey()) {
-            pendingStart.current = false;
-            void start();
-          } else pendingStart.current = false;
         }}
       />
     </>

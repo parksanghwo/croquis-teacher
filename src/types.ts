@@ -60,3 +60,42 @@ export interface CritiqueSettings {
   extract: 'ai' | 'local';
 }
 
+
+export type Kind = 'photo' | 'drawing';
+
+/** 책상 위에 올린 이미지 한 장. 올린 뒤 사진인지 그림인지 판별해서 처리한다. */
+export interface Item {
+  id: string;
+  /** 올린 그대로 */
+  raw: Img;
+  /** null = 판별 중 */
+  kind: Kind | null;
+  /** 사진 → 기준 선화, 그림 → 연필선만 남긴 것 (처리 중이면 null) */
+  out: Img | null;
+  /** 사진: 빨간 기준 선화 (올가미 강조) */
+  red: string | null;
+  source?: 'ai' | 'local';
+  busy: boolean;
+  /** 처음 놓을 위치 (책상 좌표). 없으면 빈 자리에 */
+  at?: Pt;
+}
+
+/** 사진 → 그림 연결. 연결되면 그 둘로 첨삭한다. */
+export interface Link {
+  id: string;
+  photoId: string;
+  drawingId: string;
+  status: 'waiting' | 'running' | 'done' | 'error';
+  error?: string;
+  prepared?: {
+    /** 정렬된(잘라 낸) 기준 선화·크로키 */
+    lineArt: Img;
+    croquis: Img;
+    lineArtRed: string;
+    /** 기준 선화에서 잘라 낸 영역 (원본 픽셀). 올가미 좌표 변환에 씀 */
+    refRect: { x: number; y: number; w: number; h: number } | null;
+  };
+  feedback?: Feedback;
+  /** 올가미로 끌어다 놓아 추가한 항목 */
+  extras: Issue[];
+}
