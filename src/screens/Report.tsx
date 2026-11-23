@@ -74,7 +74,7 @@ export function ReportScreen({ croquis, croquisInk, lineArtRed, feedback, extras
           </p>
           <div style={{ position: 'relative', width: W, height: H, flex: 'none', margin: '0 150px', maxWidth: '100%' }}>
             <img src={croquisInk} alt="내 크로키" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }} />
-            <CorrectionLayer issues={visible} opacity={0.88} />
+            <CorrectionLayer issues={visible} w={W} h={H} opacity={0.88} />
             <PieceLayer issues={visible} redLineArt={lineArtRed} opacity={0.88} />
             {visible.map((it, vi) => {
               const n = all.indexOf(it) + 1;
@@ -116,7 +116,7 @@ export function ReportScreen({ croquis, croquisInk, lineArtRed, feedback, extras
               );
             })}
           </div>
-          <p style={{ margin: 0, fontSize: 22, lineHeight: '40px', color: 'var(--muted-2)' }}>검정 = 내 선 · 빨강 = 고친 선</p>
+          <p style={{ margin: 0, fontSize: 22, lineHeight: '40px', color: 'var(--muted-2)' }}>검정 = 내 선 · 빨강 = 고친 선 · 파랑 = 축·방향</p>
         </section>
 
         <section aria-label="오른쪽 면: 노트" className="sheet sheet--right">
@@ -147,8 +147,10 @@ export function ReportScreen({ croquis, croquisInk, lineArtRed, feedback, extras
                     <span className="note-item__title">
                       {n}. {it.name} — {it.fix}
                     </span>
-                    <span className="note-item__why">{it.why}</span>
-                    <span className="note-item__how">→ {it.how}</span>
+                    <span className="note-item__why">관찰: {it.why}</span>
+                    {it.cause && <span className="note-item__why">원인: {it.cause}</span>}
+                    <span className="note-item__how">→ 수정: {it.how}</span>
+                    {it.rule && <span className="note-item__rule">다음 규칙: {it.rule}</span>}
                   </button>
                   {selected && (
                     <button type="button" className="trash" aria-label={`${it.name} 지우기`} onClick={() => remove(it.id)}>

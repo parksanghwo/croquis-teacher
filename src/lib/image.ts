@@ -216,6 +216,40 @@ export async function cutRegion(src: Img, poly: { x: number; y: number }[], b: {
   return { url: c.toDataURL('image/png'), w, h };
 }
 
+/**
+ * 이미지 모델에 보낼 수 있게 비율을 1:3~3:1 안으로 흰 여백을 붙여 맞추고, 16의 배수 크기를 고른다.
+ * 돌아온 결과는 restoreFromModel로 여백을 잘라 원본 캔버스 크기로 되돌린다.
+ */
+export async function prepareForModel(src: Img, longEdge = 1536) {
+  const r = Math.max(1 / 3, Math.min(3, src.w / src.h));
+  // 여백 포함 캔버스 (원본 픽셀 단위)
+  const cw = r >= src.w / src.h ? Math.round(src.h * r) : src.w;
+  const ch = r >= src.w / src.h ? src.h : Math.round(src.w / r);
+  const s = longEdge / Math.max(cw, ch);
+  const W = Math.max(16, Math.round((cw * s) / 16) * 16);
+  const H = Math.max(16, Math.round((ch * s) / 16) * 16);
+  const img = await loadImage(src.url);
+  const { c, ctx } = canvas(W, H);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, W, H);
+  const ox = ((cw - src.w) / 2 / cw) * W, oy = ((ch - src.h) / 2 / ch) * H;
+  const dw = (src.w / cw) * W, dh = (src.h / ch) * H;
+  ctx.drawImage(img, ox, oy, dw, dh);
+  const blob = await new Promise<Blob>((ok, no) => c.toBlob((b) => (b ? ok(b) : no(new Error('이미지를 만들 수 없어요.'))), 'image/png'));
+  return { blob, size: `${W}x${H}`, crop: { x: ox / W, y: oy / H, w: dw / W, h: dh / H } };
+}
+
+/** 모델이 돌려준 이미지에서 원본 영역만 잘라 원본과 같은 캔버스 크기로 */
+export async function restoreFromModel(dataUrl: string, crop: { x: number; y: number; w: number; h: number }, target: { w: number; h: number }): Promise<Img> {
+  const img = await loadImage(dataUrl);
+  const { c, ctx } = canvas(target.w, target.h);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, target.w, target.h);
+  const W = img.naturalWidth, H = img.naturalHeight;
+  ctx.drawImage(img, crop.x * W, crop.y * H, crop.w * W, crop.h * H, 0, 0, target.w, target.h);
+  return { url: c.toDataURL('image/png'), w: target.w, h: target.h };
+}
+
 /** data URL → API에 보낼 base64 + 미디어 타입 */
 export function toBase64(img: Img): { media_type: 'image/png' | 'image/jpeg'; data: string } {
   const [head, data] = img.url.split(',', 2);

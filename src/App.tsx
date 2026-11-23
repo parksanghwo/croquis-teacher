@@ -6,7 +6,7 @@ import { UploadScreen } from './screens/Upload';
 import { CompareScreen } from './screens/Compare';
 import { ReportScreen } from './screens/Report';
 import { cleanPaper, crop, cutRegion, inkBounds, loadFile, toInk, traceLineArt } from './lib/image';
-import { describeError, MissingKeyError, requestCritique, requestRegionCritique } from './lib/ai';
+import { aiLineArt, aiPencilLines, describeError, MissingKeyError, requestCritique, requestRegionCritique } from './lib/ai';
 import { getApiKey } from './lib/settings';
 
 interface Prepared {
@@ -26,6 +26,12 @@ export default function App() {
   const [autoLineArt, setAutoLineArt] = useState<Img | null>(null);
   const [customLineArt, setCustomLineArt] = useState<Img | null>(null);
   const [croquis, setCroquis] = useState<Img | null>(null);
+  /** 보정 전 크로키 원본 (추출 방식을 바꾸면 다시 추출) */
+  const [croquisRaw, setCroquisRaw] = useState<Img | null>(null);
+  /** 각 선화를 무엇으로 만들었는지 */
+  const [source, setSource] = useState<{ lineArt?: 'ai' | 'local'; croquis?: 'ai' | 'local' }>({});
+  const [notice, setNotice] = useState<string | null>(null);
+  const seq = useRef({ photo: 0, croquis: 0 });
   const [busy, setBusy] = useState<{ photo?: boolean; croquis?: boolean; critique?: boolean }>({});
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState<CritiqueSettings>({
@@ -34,6 +40,7 @@ export default function App() {
     excludeHead: true,
     autoAlign: true,
     detailedTone: false,
+    extract: 'ai',
   });
   const [prepared, setPrepared] = useState<Prepared | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
@@ -54,18 +61,62 @@ export default function App() {
 
   const fail = (e: unknown) => setError(describeError(e));
 
+  /**
+   * 선화 추출: AI(프롬프트 1·2, 이미지 모델) → 실패하거나 키가 없으면 브라우저 자동 트레이싱.
+   * 나중에 올린 이미지가 먼저 끝나도 꼬이지 않게 순번으로 확인한다.
+   */
+  async function extract(kind: 'photo' | 'croquis', src: Img, mode = settings.extract) {
+    const n = ++seq.current[kind];
+    const local = () => (kind === 'photo' ? traceLineArt(src) : cleanPaper(src));
+    setBusy((b) => ({ ...b, [kind]: true }));
+    try {
+      let out: Img;
+      let from: 'ai' | 'local' = 'local';
+      if (mode === 'ai' && getApiKey()) {
+        try {
+          out = kind === 'photo' ? await aiLineArt(src) : await aiPencilLines(src);
+          from = 'ai';
+        } catch (e) {
+          if (n !== seq.current[kind]) return;
+          setNotice(`AI ${kind === 'photo' ? '선화' : '연필선'} 추출에 실패해서 자동 트레이싱으로 대신했어요. (${describeError(e)})`);
+          out = await local();
+        }
+      } else {
+        if (mode === 'ai') setNotice('API 키가 없어서 자동 트레이싱으로 선을 땄어요. 키를 넣은 뒤 이미지를 다시 올리면 AI로 추출해요.');
+        out = await local();
+      }
+      if (n !== seq.current[kind]) return;
+      if (kind === 'photo') setAutoLineArt(out);
+      else setCroquis(out);
+      setSource((s) => ({ ...s, [kind === 'photo' ? 'lineArt' : 'croquis']: from }));
+    } catch (e) {
+      if (n === seq.current[kind]) fail(e);
+    } finally {
+      if (n === seq.current[kind]) setBusy((b) => ({ ...b, [kind]: false }));
+    }
+  }
+
   async function onPhoto(f: File) {
     setError(null);
-    setBusy((b) => ({ ...b, photo: true }));
+    setNotice(null);
     try {
       const img = await loadFile(f);
       setPhoto(img);
-      setAutoLineArt(await traceLineArt(img));
+      setAutoLineArt(null);
+      await extract('photo', img);
     } catch (e) {
       fail(e);
-    } finally {
-      setBusy((b) => ({ ...b, photo: false }));
     }
+  }
+
+  function onSettings(next: CritiqueSettings) {
+    // 추출 방식을 바꾸면 이미 올린 이미지도 다시 추출
+    if (next.extract !== settings.extract) {
+      setNotice(null);
+      if (photo) void extract('photo', photo, next.extract);
+      if (croquisRaw) void extract('croquis', croquisRaw, next.extract);
+    }
+    setSettings(next);
   }
 
   async function onLineArt(f: File | null) {
@@ -80,13 +131,14 @@ export default function App() {
 
   async function onCroquis(f: File) {
     setError(null);
-    setBusy((b) => ({ ...b, croquis: true }));
+    setNotice(null);
     try {
-      setCroquis(await cleanPaper(await loadFile(f)));
+      const img = await loadFile(f);
+      setCroquisRaw(img);
+      setCroquis(null);
+      await extract('croquis', img);
     } catch (e) {
       fail(e);
-    } finally {
-      setBusy((b) => ({ ...b, croquis: false }));
     }
   }
 
@@ -111,7 +163,8 @@ export default function App() {
           croquis: await crop(croquis, await inkBounds(croquis)),
         };
       }
-      const fb = await requestCritique(imgs, settings, ctrl.signal);
+      // 3번 프롬프트: 기준 선화 A와 학생 크로키 B만 보낸다
+      const fb = await requestCritique({ lineArt: imgs.lineArt, croquis: imgs.croquis }, settings, ctrl.signal);
       setPrepared({
         ...imgs,
         aligned: settings.autoAlign,
@@ -167,11 +220,14 @@ export default function App() {
           croquis={croquis}
           busy={busy}
           settings={settings}
+          source={source}
+          notice={notice}
+          onDismissNotice={() => setNotice(null)}
           error={error}
           onPhoto={onPhoto}
           onLineArt={onLineArt}
           onCroquis={onCroquis}
-          onSettings={setSettings}
+          onSettings={onSettings}
           onStart={start}
           onCancel={() => abort.current?.abort()}
         />

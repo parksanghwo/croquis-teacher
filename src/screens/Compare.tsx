@@ -39,6 +39,7 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
   const [trace, setTrace] = useState(true);
   const [showPhoto, setShowPhoto] = useState(false);
   const [overlay, setOverlay] = useState(false);
+  const [lineOpacity, setLineOpacity] = useState(90);
   // null = 전체 보기 (메모까지 모두 들어오게 자동으로 맞춤)
   const [view, setView] = useState<View | null>(null);
   const [heights, setHeights] = useState<Record<string, number>>({});
@@ -347,6 +348,10 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
               <span className="toggle__knob" />
               기준선 겹치기
             </button>
+            <label className="range" title="교정선 투명도">
+              교정선
+              <input type="range" min={10} max={100} step={5} value={lineOpacity} onChange={(e) => setLineOpacity(Number(e.target.value))} aria-valuetext={`${lineOpacity}%`} />
+            </label>
             <button
               type="button"
               className="btn btn--sm"
@@ -416,8 +421,8 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
                 {overlay && (
                   <img src={lineArtInk} alt="" draggable={false} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: objFit, opacity: 0.3, pointerEvents: 'none' }} />
                 )}
-                <CorrectionLayer issues={visible} />
-                <PieceLayer issues={visibleExtras} redLineArt={lineArtRed} />
+                <CorrectionLayer issues={visible} w={BW} h={BH} opacity={lineOpacity / 100} />
+                <PieceLayer issues={visibleExtras} redLineArt={lineArtRed} opacity={lineOpacity / 100} />
               </div>
 
               {pendings.map((p) => (

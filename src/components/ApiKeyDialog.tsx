@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { DEFAULT_MODEL, getModel, getSavedKey, hasEnvKey, saveSettings } from '../lib/settings';
+import { DEFAULT_IMAGE_MODEL, DEFAULT_MODEL, getImageModel, getModel, getSavedKey, hasEnvKey, saveSettings } from '../lib/settings';
 
 interface Props {
   open: boolean;
@@ -10,6 +10,7 @@ export function ApiKeyDialog({ open, onClose }: Props) {
   const ref = useRef<HTMLDialogElement>(null);
   const [key, setKey] = useState('');
   const [model, setModel] = useState(DEFAULT_MODEL);
+  const [imageModel, setImageModel] = useState(DEFAULT_IMAGE_MODEL);
   const [remember, setRemember] = useState(true);
 
   useEffect(() => {
@@ -18,6 +19,7 @@ export function ApiKeyDialog({ open, onClose }: Props) {
     if (open && !d.open) {
       setKey(getSavedKey());
       setModel(getModel());
+      setImageModel(getImageModel());
       d.showModal();
     } else if (!open && d.open) d.close();
   }, [open]);
@@ -28,7 +30,7 @@ export function ApiKeyDialog({ open, onClose }: Props) {
         method="dialog"
         onSubmit={(e) => {
           e.preventDefault();
-          saveSettings(key, model, remember);
+          saveSettings(key, model, imageModel, remember);
           onClose(true);
         }}
       >
@@ -46,8 +48,12 @@ export function ApiKeyDialog({ open, onClose }: Props) {
           />
         </label>
         <label className="field">
-          모델
+          첨삭 모델
           <input type="text" spellCheck={false} value={model} onChange={(e) => setModel(e.target.value)} />
+        </label>
+        <label className="field">
+          선화 추출 이미지 모델
+          <input type="text" spellCheck={false} value={imageModel} onChange={(e) => setImageModel(e.target.value)} />
         </label>
         <label className="check">
           <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />이 기기에 저장

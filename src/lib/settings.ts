@@ -1,13 +1,17 @@
 // 예전 Anthropic 키가 OpenAI로 전송되지 않도록 저장 이름을 새로 씀
 const KEY = 'croquis-teacher.openaiKey';
 const MODEL = 'croquis-teacher.openaiModel';
+const IMAGE_MODEL = 'croquis-teacher.openaiImageModel';
 
 // .env 값은 개발 서버(npm run dev)에서만 읽는다.
 // 빌드(npm run build)에서는 DEV가 false라 키 문자열이 결과물에 들어가지 않는다.
 const ENV_KEY = import.meta.env.DEV ? (import.meta.env.VITE_OPENAI_API_KEY ?? '').trim() : '';
 const ENV_MODEL = import.meta.env.DEV ? (import.meta.env.VITE_OPENAI_MODEL ?? '').trim() : '';
+const ENV_IMAGE_MODEL = import.meta.env.DEV ? (import.meta.env.VITE_OPENAI_IMAGE_MODEL ?? '').trim() : '';
 
 export const DEFAULT_MODEL = ENV_MODEL || 'gpt-6-luna';
+/** 선화 추출(프롬프트 1·2)용 이미지 모델 */
+export const DEFAULT_IMAGE_MODEL = ENV_IMAGE_MODEL || 'gpt-image-2';
 
 function read(k: string): string {
   try {
@@ -27,6 +31,7 @@ function write(k: string, v: string) {
 
 let memKey = read(KEY);
 let memModel = read(MODEL) || DEFAULT_MODEL;
+let memImageModel = read(IMAGE_MODEL) || DEFAULT_IMAGE_MODEL;
 
 /** 창에서 입력한 키가 우선, 없으면 .env 키 */
 export const getApiKey = () => memKey || ENV_KEY;
@@ -34,9 +39,12 @@ export const getApiKey = () => memKey || ENV_KEY;
 export const getSavedKey = () => memKey;
 export const hasEnvKey = () => !!ENV_KEY;
 export const getModel = () => memModel;
-export function saveSettings(apiKey: string, model: string, remember: boolean) {
+export const getImageModel = () => memImageModel;
+export function saveSettings(apiKey: string, model: string, imageModel: string, remember: boolean) {
   memKey = apiKey.trim();
   memModel = model.trim() || DEFAULT_MODEL;
+  memImageModel = imageModel.trim() || DEFAULT_IMAGE_MODEL;
   write(KEY, remember ? memKey : '');
   write(MODEL, memModel === DEFAULT_MODEL ? '' : memModel);
+  write(IMAGE_MODEL, memImageModel === DEFAULT_IMAGE_MODEL ? '' : memImageModel);
 }

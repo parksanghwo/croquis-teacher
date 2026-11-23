@@ -31,6 +31,11 @@ interface Props {
   croquis: Img | null;
   busy: { photo?: boolean; croquis?: boolean; critique?: boolean };
   settings: CritiqueSettings;
+  /** 각 선화를 AI로 만들었는지 자동 트레이싱으로 만들었는지 */
+  source: { lineArt?: 'ai' | 'local'; croquis?: 'ai' | 'local' };
+  /** App에서 올린 안내 (AI 추출 실패 등) */
+  notice: string | null;
+  onDismissNotice: () => void;
   error: string | null;
   onPhoto: (f: File) => void;
   onLineArt: (f: File | null) => void;
@@ -102,6 +107,7 @@ const Working = ({ children }: { children: ReactNode }) => (
 export function UploadScreen(p: Props) {
   const s = p.settings;
   const ready = !!(p.photo && p.lineArt && p.croquis) && !p.busy.photo && !p.busy.croquis;
+  const aiLine = p.settings.extract === 'ai';
   const [hovered, setHovered] = useState<Slot | null>(null);
   const [phoneSlot, setPhoneSlot] = useState<Slot | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -221,7 +227,7 @@ export function UploadScreen(p: Props) {
             }
           />
           <div className="status">
-            {p.busy.photo ? <Working>사진 읽는 중…</Working> : p.photo ? <Ok>업로드 완료 · {p.photo.w}×{p.photo.h}</Ok> : 'JPG, PNG'}
+            {p.photo ? <Ok>업로드 완료 · {p.photo.w}×{p.photo.h}</Ok> : p.busy.photo ? <Working>사진 읽는 중…</Working> : 'JPG, PNG'}
           </div>
         </article>
 
@@ -230,11 +236,22 @@ export function UploadScreen(p: Props) {
             <span className="badge badge--accent">
               <PencilBadge />
             </span>
-            <h2>{p.lineArtCustom ? '기준 선화 (직접 올림)' : '기준 선화 (자동 트레이싱)'}</h2>
+            <h2>{p.lineArtCustom ? '기준 선화 (직접 올림)' : aiLine ? '기준 선화 (AI 추출)' : '기준 선화 (자동 트레이싱)'}</h2>
           </div>
-          <DropArea img={p.lineArt} alt="사진에서 추출한 기준 선화" white onFile={p.photo ? (f) => p.onLineArt(f) : undefined} empty="원본 사진을 올리면 자동으로 선을 따요" />
+          <DropArea img={p.lineArt} alt="사진에서 추출한 기준 선화" white onFile={p.photo ? (f) => p.onLineArt(f) : undefined} empty={
+              p.busy.photo ? (
+                <Working>{aiLine ? 'AI가 사진에서 선화를 따는 중… (수십 초 걸릴 수 있어요)' : '선 추출 중…'}</Working>
+              ) : (
+                '원본 사진을 올리면 선화를 따요'
+              )
+            }
+          />
           <div className="status">
-            {p.busy.photo ? <Working>선 추출 중…</Working> : p.lineArt ? <Ok>{p.lineArtCustom ? '직접 그린 선화' : '추출 완료'}</Ok> : null}
+            {p.busy.photo ? (
+              <Working>선 추출 중…</Working>
+            ) : p.lineArt ? (
+              <Ok>{p.lineArtCustom ? '직접 그린 선화' : p.source.lineArt === 'ai' ? 'AI 추출 완료' : '자동 트레이싱 완료'}</Ok>
+            ) : null}
             {p.photo &&
               (p.lineArtCustom ? (
                 <button type="button" className="btn btn--text" onClick={() => p.onLineArt(null)}>
@@ -258,16 +275,26 @@ export function UploadScreen(p: Props) {
             white
             onFile={p.onCroquis}
             empty={
+              p.busy.croquis ? (
+                <Working>{aiLine ? 'AI가 연필선만 남기는 중… (수십 초 걸릴 수 있어요)' : '종이 보정 중…'}</Working>
+              ) : (
               <>
                 <UploadIcon />
                 종이에 그린 크로키를 찍거나 스캔해서 올려 주세요
                 {emptyActions('croquis', '크로키 선택')}
                 <span className="paste-hint">끌어다 놓기 · Ctrl+V 붙여넣기도 돼요</span>
               </>
+              )
             }
           />
           <div className="status">
-            {p.busy.croquis ? <Working>종이 보정 중…</Working> : p.croquis ? <Ok>종이 보정 · 선 추출 완료</Ok> : '종이 그림자는 자동으로 지워요'}
+            {p.busy.croquis ? (
+              <Working>선 추출 중…</Working>
+            ) : p.croquis ? (
+              <Ok>{p.source.croquis === 'ai' ? 'AI 연필선 추출 완료' : '종이 보정 · 선 추출 완료'}</Ok>
+            ) : (
+              '종이 배경과 그림자는 지우고 선만 남겨요'
+            )}
           </div>
         </article>
       </section>
@@ -309,13 +336,24 @@ export function UploadScreen(p: Props) {
             <input type="checkbox" checked={s.detailedTone} onChange={(e) => p.onSettings({ ...s, detailedTone: e.target.checked })} />
             꼼꼼한 말투로 피드백
           </label>
+          <label className="check">
+            <input type="checkbox" checked={s.extract === 'ai'} onChange={(e) => p.onSettings({ ...s, extract: e.target.checked ? 'ai' : 'local' })} />
+            AI로 선화 추출 (더 정확하지만 시간·비용이 들어요)
+          </label>
         </fieldset>
       </section>
 
-      {notice && (
+      {(notice ?? p.notice) && (
         <div className="alert" role="status">
-          {notice}
-          <button type="button" className="btn btn--sm" onClick={() => setNotice(null)}>
+          {notice ?? p.notice}
+          <button
+            type="button"
+            className="btn btn--sm"
+            onClick={() => {
+              if (notice) setNotice(null);
+              else p.onDismissNotice();
+            }}
+          >
             닫기
           </button>
         </div>

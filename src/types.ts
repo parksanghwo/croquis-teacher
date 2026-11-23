@@ -18,7 +18,18 @@ export interface Issue {
   how: string;
   x: number;
   y: number;
+  /** 빨간 교정선 */
   strokes: Pt[][];
+  /** 파란 보조선: 관절 중심축·방향선·이동 방향 */
+  axes?: Pt[][];
+  /** 흐리게 덮을 학생의 기존 선 */
+  fade?: Pt[][];
+  /** 오류의 원인 */
+  cause?: string;
+  /** 다음 크로키에 적용할 규칙 */
+  rule?: string;
+  /** 중요도 1~4 */
+  priority?: number;
   /** 기준 선화에서 올가미로 골라 끌어다 놓은 조각 (좌표는 기준 선화 기준 0~1) */
   piece?: Piece;
   /** 조각을 놓고 분석을 기다리는 중 */
@@ -45,6 +56,8 @@ export interface CritiqueSettings {
   excludeHead: boolean;
   autoAlign: boolean;
   detailedTone: boolean;
+  /** 선화 추출: AI 이미지 모델(프롬프트 1·2) 또는 브라우저 자동 트레이싱 */
+  extract: 'ai' | 'local';
 }
 
 export type Step = 1 | 2 | 3;

@@ -1,56 +1,46 @@
-import OpenAI from 'openai';
+import OpenAI, { toFile } from 'openai';
 import { zodTextFormat } from 'openai/helpers/zod';
 import type { ParsedResponse } from 'openai/resources/responses/responses';
 import { z } from 'zod';
-import type { CritiqueSettings, Feedback, Img } from '../types';
-import { toBase64 } from './image';
-import { getApiKey, getModel } from './settings';
+import type { CritiqueSettings, Feedback, Img, Pt } from '../types';
+import { prepareForModel, restoreFromModel, toBase64 } from './image';
+import { CRITIQUE_PROMPT, LINE_ART_PROMPT, PENCIL_PROMPT, REGION_PROMPT } from './prompts';
+import { getApiKey, getImageModel, getModel } from './settings';
 
 const PointSchema = z.object({
-  x: z.number().describe('내 크로키 이미지 기준 가로 위치 % (0=왼쪽, 100=오른쪽)'),
-  y: z.number().describe('내 크로키 이미지 기준 세로 위치 % (0=위, 100=아래)'),
+  x: z.number().describe('이미지 B 기준 가로 위치 % (0=왼쪽, 100=오른쪽)'),
+  y: z.number().describe('이미지 B 기준 세로 위치 % (0=위, 100=아래)'),
 });
+const Line = z.array(PointSchema);
+
+const NoteFields = {
+  name: z.string().describe('교정 부위, 짧게. 예: "왼쪽 팔꿈치"'),
+  fix: z.string().describe('메모에 쓸 한 줄 요약, 15자 안팎. 예: "위팔 45°로 세우기"'),
+  observed: z.string().describe('관찰된 오류: 어느 선이 기준 선화와 어떻게 다른지'),
+  cause: z.string().describe('오류의 원인 추정'),
+  how: z.string().describe('수정 방법: 기존 선의 어느 지점에서 시작해 어느 방향으로 새 선을 그릴지'),
+  rule: z.string().describe('다음 크로키에 적용할 짧고 명확한 행동 지침'),
+};
 
 const FeedbackSchema = z.object({
   pose: z.string().describe('포즈 한 줄 요약. 예: "전신 스트리트 포즈"'),
-  good: z.string().describe('잘한 점 1~2문장'),
+  good: z.string().describe('기준 선화와 잘 맞는 점 1~2문장'),
   issues: z
     .array(
       z.object({
-        name: z.string().describe('부위 이름, 6자 이내. 예: "팔꿈치"'),
-        fix: z.string().describe('고칠 점 한 구절, 15자 이내. 예: "팔꿈치 더 접기, 위팔 45°"'),
-        why: z.string().describe('왜 어색한지 한 문장'),
-        how: z.string().describe('어떻게 고칠지 한 문장'),
-        x: z.number().describe('문제 부위 중심 가로 %'),
-        y: z.number().describe('문제 부위 중심 세로 %'),
-        strokes: z
-          .array(z.array(PointSchema))
-          .describe('빨간 펜으로 덧그릴 "올바른" 선. 1~3개 폴리라인, 각 4~14개 점'),
+        ...NoteFields,
+        priority: z.number().describe('STEP 3 중요도 1~4 (1=동작·무게중심, 2=비례·관절, 3=실루엣·부피, 4=주름·세부)'),
+        x: z.number().describe('교정 부위 중심 가로 %'),
+        y: z.number().describe('교정 부위 중심 세로 %'),
+        red: z.array(Line).describe('빨간 교정선: 이미지 B 위에 그릴 올바른 윤곽 폴리라인들'),
+        blue: z.array(Line).describe('파란 보조선: 관절 중심축·방향선·이동 방향 (마지막 점에 화살표)'),
+        fade: z.array(Line).describe('흐리게 처리할 학생의 기존 선 폴리라인들'),
       }),
     )
-    .describe('고칠 점 3~6개, 위에서 아래 순서'),
+    .describe('가장 중요한 오류 4~7개, 중요도 순'),
 });
 
-const SYSTEM = `당신은 인체 크로키를 가르치는 친절한 미술 선생님입니다.
-학생이 참고 사진을 보고 그린 크로키를 받아, 사진과 비교해 비례·관절 각도·실루엣·옷 주름 등 형태의 차이를 짚어 줍니다.
-
-이미지는 세 장이 순서대로 주어집니다.
-1) 참고 사진
-2) 참고 사진에서 자동 추출한 기준 선화 (근사치라 노이즈가 있을 수 있음)
-3) 학생의 크로키 — 모든 좌표는 이 세 번째 이미지 기준 백분율(%)입니다. 왼쪽 위가 (0,0), 오른쪽 아래가 (100,100).
-
-규칙:
-- 각 항목의 strokes는 학생 그림 위에 빨간 펜으로 덧그릴 "고쳐진 선"입니다. 학생이 그린 해당 부위 위치에, 사진처럼 보이도록 수정된 윤곽을 그립니다. 학생 선과 대략 같은 크기·위치에 두되 고친 모양을 보여 주세요.
-- x, y는 고칠 부위의 중심입니다. strokes와 같은 영역이어야 합니다.
-- 실제로 크로키에서 보이는 차이만 지적하세요. 사소한 디테일보다 큰 형태를 먼저.
-- 한국어로, 반말이 아닌 부드러운 말투로 짧게 씁니다.`;
-
-const RegionSchema = z.object({
-  name: z.string().describe('부위 이름, 6자 이내'),
-  fix: z.string().describe('고칠 점 한 구절, 15자 이내'),
-  why: z.string().describe('내 선과 기준선이 어떻게 다른지 한 문장'),
-  how: z.string().describe('어떻게 고칠지 한 문장'),
-});
+const RegionSchema = z.object(NoteFields);
 
 export class MissingKeyError extends Error {}
 
@@ -80,62 +70,52 @@ function unwrap<T>(response: ParsedResponse<T>): T {
   return response.output_parsed;
 }
 
-/** 학생이 기준 선화에서 고른 조각을 내 크로키의 특정 위치에 놓았을 때, 그 부위 하나만 비교 */
-export async function requestRegionCritique(
-  images: { lineArt: Img; region: Img; croquis: Img },
-  at: { x: number; y: number; w: number; h: number },
-  settings: CritiqueSettings,
-): Promise<{ name: string; fix: string; why: string; how: string }> {
-  const response = await client().responses.parse({
-    model: getModel(),
-    max_output_tokens: 16000,
-    instructions: SYSTEM,
-    text: { format: zodTextFormat(RegionSchema, 'region_feedback') },
-    input: [
-      {
-        role: 'user',
-        content: [
-          image(images.lineArt),
-          image(images.region),
-          image(images.croquis),
-          text(
-            `이번에는 이미지가 다르게 주어져요: 1) 기준 선화 전체, 2) 학생이 기준 선화에서 올가미로 고른 조각, 3) 학생의 크로키.\n` +
-              `학생은 이 조각을 크로키 위 가로 ${at.x.toFixed(0)}%, 세로 ${at.y.toFixed(0)}% 위치(조각 크기 약 ${at.w.toFixed(0)}%×${at.h.toFixed(0)}%)에 겹쳐 놓았어요.\n` +
-              `그 자리에 있는 학생의 선과 고른 기준선을 비교해서 고칠 점 하나만 알려 주세요.\n` +
-              (settings.detailedTone ? 'why/how는 구체적으로 쓰세요.' : 'why/how는 각각 25자 안팎으로 짧게 쓰세요.'),
-          ),
-        ],
-      },
-    ],
-  });
-  return unwrap(response);
+/** 1·2번 프롬프트: 이미지 모델로 선화를 받아 원본 캔버스 크기로 맞춘다 */
+async function editToLineArt(src: Img, prompt: string, signal?: AbortSignal): Promise<Img> {
+  const prep = await prepareForModel(src);
+  const res = await client().images.edit(
+    {
+      model: getImageModel(),
+      image: await toFile(prep.blob, 'input.png', { type: 'image/png' }),
+      prompt,
+      size: prep.size,
+      output_format: 'png',
+    },
+    { signal },
+  );
+  const b64 = res.data?.[0]?.b64_json;
+  if (!b64) throw new Error('이미지 모델이 결과 이미지를 돌려주지 않았어요.');
+  return restoreFromModel(`data:image/png;base64,${b64}`, prep.crop, src);
 }
 
-export async function requestCritique(
-  images: { photo: Img; lineArt: Img; croquis: Img },
-  settings: CritiqueSettings,
-  signal?: AbortSignal,
-): Promise<Feedback> {
-  const brief = [
-    `연습 시간: ${settings.time} 크로키 (짧을수록 큰 흐름 위주로 너그럽게 봐 주세요)`,
-    settings.focus.length ? `중점: ${settings.focus.join(', ')}` : '중점: 전체',
+/** 1번: 실사 사진 → 크로키 연습용 기준 선화 */
+export const aiLineArt = (photo: Img, signal?: AbortSignal) => editToLineArt(photo, LINE_ART_PROMPT, signal);
+/** 2번: 크로키 사진 → 연필선만 */
+export const aiPencilLines = (croquis: Img, signal?: AbortSignal) => editToLineArt(croquis, PENCIL_PROMPT, signal);
+
+function brief(settings: CritiqueSettings) {
+  return [
+    `연습 시간: ${settings.time} 크로키 (짧은 크로키일수록 큰 흐름과 구조 위주로 판단하세요)`,
+    settings.focus.length ? `학생이 중점으로 보고 싶은 부분: ${settings.focus.join(', ')}` : '',
     settings.excludeHead ? '머리·얼굴은 캐릭터화로 보고 비교에서 제외하세요.' : '머리·얼굴도 비교에 포함하세요.',
-    settings.detailedTone
-      ? 'why/how는 구체적인 수치·방향을 넣어 꼼꼼하게 쓰세요.'
-      : 'why/how는 각각 25자 안팎으로 짧게 쓰세요.',
-  ].join('\n');
+    settings.detailedTone ? '오답노트는 구체적인 위치·방향·비율을 넣어 꼼꼼하게 쓰세요.' : '오답노트 각 항목은 한두 문장으로 간결하게 쓰세요.',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
 
-
+/** 3번: 기준 선화 A와 학생 크로키 B 비교 */
+export async function requestCritique(images: { lineArt: Img; croquis: Img }, settings: CritiqueSettings, signal?: AbortSignal): Promise<Feedback> {
   const response = await client().responses.parse(
     {
       model: getModel(),
-      max_output_tokens: 16000,
-      instructions: SYSTEM,
+      max_output_tokens: 32000,
+      instructions: CRITIQUE_PROMPT,
       text: { format: zodTextFormat(FeedbackSchema, 'croquis_feedback') },
       input: [
         {
           role: 'user',
-          content: [image(images.photo), image(images.lineArt), image(images.croquis), text(`${brief}\n\n세 번째 이미지(내 크로키)를 첨삭해 주세요.`)],
+          content: [image(images.lineArt), image(images.croquis), text(`${brief(settings)}\n\n이미지 A(첫 번째)를 기준으로 이미지 B(두 번째)를 교정해 주세요.`)],
         },
       ],
     },
@@ -144,17 +124,46 @@ export async function requestCritique(
   const out = unwrap(response);
 
   const clamp = (v: number) => Math.max(0, Math.min(100, v));
+  const lines = (ls: { x: number; y: number }[][]): Pt[][] => ls.map((l) => l.map((p) => ({ x: clamp(p.x), y: clamp(p.y) }))).filter((l) => l.length > 1);
   return {
     pose: out.pose,
     good: out.good,
-    issues: out.issues.map((it, i) => ({
-      ...it,
-      id: `issue-${i}`,
-      x: clamp(it.x),
-      y: clamp(it.y),
-      strokes: it.strokes.map((s) => s.map((p) => ({ x: clamp(p.x), y: clamp(p.y) }))).filter((s) => s.length > 1),
-    })),
+    issues: out.issues
+      .slice()
+      .sort((a, b) => a.priority - b.priority)
+      .map((it, i) => ({
+        id: `issue-${i}`,
+        name: it.name,
+        fix: it.fix,
+        why: it.observed,
+        how: it.how,
+        cause: it.cause,
+        rule: it.rule,
+        priority: Math.max(1, Math.min(4, Math.round(it.priority))),
+        x: clamp(it.x),
+        y: clamp(it.y),
+        strokes: lines(it.red),
+        axes: lines(it.blue),
+        fade: lines(it.fade),
+      })),
   };
+}
+
+/** 학생이 기준 선화에서 고른 조각을 크로키 위에 놓았을 때, 그 부위 하나만 비교 */
+export async function requestRegionCritique(
+  images: { lineArt: Img; region: Img; croquis: Img },
+  at: { x: number; y: number; w: number; h: number },
+  settings: CritiqueSettings,
+) {
+  const response = await client().responses.parse({
+    model: getModel(),
+    max_output_tokens: 16000,
+    instructions: CRITIQUE_PROMPT,
+    text: { format: zodTextFormat(RegionSchema, 'region_feedback') },
+    input: [{ role: 'user', content: [image(images.lineArt), image(images.region), image(images.croquis), text(`${brief(settings)}\n\n${REGION_PROMPT(at)}`)] }],
+  });
+  const r = unwrap(response);
+  return { name: r.name, fix: r.fix, why: r.observed, how: r.how, cause: r.cause, rule: r.rule };
 }
 
 export function describeError(err: unknown): string {
