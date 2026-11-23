@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type { CritiqueSettings, Feedback, Img, Issue, Piece, Pt, Step } from './types';
-import { Header } from './components/Header';
 import { ApiKeyDialog } from './components/ApiKeyDialog';
 import { UploadScreen } from './screens/Upload';
-import { CompareScreen } from './screens/Compare';
-import { ReportScreen } from './screens/Report';
+import { Workspace } from './screens/Workspace';
+import { KeyIcon, PencilIcon } from './components/Icons';
 import { cleanPaper, crop, cutRegion, inkBounds, loadFile, toInk, traceLineArt } from './lib/image';
 import { aiLineArt, aiPencilLines, describeError, MissingKeyError, requestCritique, requestRegionCritique } from './lib/ai';
 import { getApiKey } from './lib/settings';
@@ -53,7 +52,6 @@ export default function App() {
   const abort = useRef<AbortController | null>(null);
 
   const lineArt = customLineArt ?? autoLineArt;
-  const maxStep: Step = feedback ? 3 : 1;
 
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -206,11 +204,30 @@ export default function App() {
     }
   }
 
-  const doneExtras = extras.filter((x) => !x.pending);
-
   return (
-    <div className={step === 3 ? 'app app--sunk' : 'app'}>
-      <Header step={step} maxStep={maxStep} hasKey={hasKey} onStep={(s) => s <= maxStep && setStep(s)} onKey={() => setKeyOpen(true)} />
+    <div className={step === 1 ? 'app app--desk' : 'app'}>
+      {step === 1 && (
+        <>
+          <div className="top">
+            <div className="logo">
+              <PencilIcon width={18} height={18} />
+            </div>
+            <h1>크로키 선생님</h1>
+            {feedback && (
+              <button type="button" className="top__btn" onClick={() => setStep(2)}>
+                첨삭으로 돌아가기
+              </button>
+            )}
+          </div>
+          <div className="top-right">
+            <button type="button" className="pill-btn" onClick={() => setKeyOpen(true)}>
+              <KeyIcon />
+              API 키
+              <span className={hasKey ? 'key-dot key-dot--on' : 'key-dot'} aria-label={hasKey ? '입력됨' : '없음'} />
+            </button>
+          </div>
+        </>
+      )}
 
       {step === 1 && (
         <UploadScreen
@@ -232,8 +249,20 @@ export default function App() {
           onCancel={() => abort.current?.abort()}
         />
       )}
-      {step === 2 && prepared && feedback && <CompareScreen {...prepared} feedback={feedback} extras={extras} regionError={regionError} onDropPiece={onDropPiece} onNext={() => setStep(3)} />}
-      {step === 3 && prepared && feedback && <ReportScreen croquis={prepared.croquis} croquisInk={prepared.croquisInk} lineArtRed={prepared.lineArtRed} feedback={feedback} extras={doneExtras} settings={settings} />}
+      {step === 2 && prepared && feedback && (
+        <Workspace
+          {...prepared}
+          feedback={feedback}
+          extras={extras}
+          regionError={regionError}
+          settings={settings}
+          lineArtSource={customLineArt ? undefined : source.lineArt}
+          hasKey={hasKey}
+          onDropPiece={onDropPiece}
+          onNew={() => setStep(1)}
+          onKey={() => setKeyOpen(true)}
+        />
+      )}
 
       <ApiKeyDialog
         open={keyOpen}
