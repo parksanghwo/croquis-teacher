@@ -128,7 +128,7 @@ a:hover { color: var(--accent-ink-hover); }
 .zoom__btn { width: 40px; height: 40px; border: 0; border-radius: 9px; background: transparent; color: var(--ink); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .zoom__label { min-width: 52px; text-align: center; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .zoom__fit { height: 40px; padding: 0 12px; border: 0; border-radius: 9px; background: #fff; color: var(--ink); font-size: 14px; font-weight: 600; cursor: pointer; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); }
-.left-stage { flex: 1; min-height: 700px; display: flex; align-items: center; justify-content: center; padding: 20px; overflow: hidden; }
+.left-stage { position: relative; flex: 1; min-height: 700px; display: flex; align-items: center; justify-content: center; padding: 20px; overflow: hidden; }
 .left-empty { position: absolute; inset: 0; border: 1.5px dashed var(--line-strong); border-radius: 12px; display: flex; align-items: center; justify-content: center; text-align: center; font-size: 14px; color: var(--muted); padding: 24px; }
 .viewport { position: relative; flex: 1; min-height: 700px; overflow: hidden; touch-action: none; user-select: none; background-color: var(--paper); background-image: repeating-linear-gradient(to bottom, transparent 0, transparent 31px, var(--paper-rule) 31px, var(--paper-rule) 32px); }
 .viewport__hint { position: absolute; left: 12px; bottom: 12px; padding: 5px 10px; border-radius: 8px; background: rgba(27, 27, 31, 0.75); color: #fff; font-size: 12px; pointer-events: none; }
@@ -142,6 +142,12 @@ a:hover { color: var(--accent-ink-hover); }
 .summary__good { flex: 1 1 480px; display: flex; align-items: baseline; gap: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px 18px; }
 .summary__good strong { font-size: 14px; font-weight: 600; color: var(--ok-strong); white-space: nowrap; }
 .summary__good p { margin: 0; font-size: 14px; line-height: 1.6; color: var(--ink-2); }
+
+.drop-target { position: absolute; inset: 8px; border: 2px dashed var(--accent); border-radius: 12px; background: rgba(251, 227, 230, 0.25); pointer-events: none; display: flex; align-items: flex-start; justify-content: center; padding-top: 16px; }
+.drop-target span { padding: 6px 12px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 13px; font-weight: 600; }
+.pulse { animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
 
 /* 3 · 노트 */
 .notebook-wrap { width: 100%; max-width: 1280px; margin: 0 auto; padding: 40px 24px 64px; }

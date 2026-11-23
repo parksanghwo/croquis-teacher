@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as RPointerEvent } from 'react';
-import type { Feedback, Img } from '../types';
+import type { Feedback, Img, Issue, Piece, Pt } from '../types';
 import { ArrowRightIcon, MinusIcon, PlusIcon } from '../components/Icons';
 import { CorrectionLayer } from '../components/CorrectionLayer';
-import { ringOf, spread } from '../lib/geometry';
+import { PieceLayer } from '../components/PieceLayer';
+import { bounds, clipPoly, inPoly, ringOf, spread } from '../lib/geometry';
 
 interface Props {
   photo: Img;
@@ -11,7 +12,13 @@ interface Props {
   aligned: boolean;
   croquisInk: string;
   lineArtInk: string;
+  /** 빨간 기준 선화 (투명 배경) — 올가미 조각 표시용 */
+  lineArtRed: string;
   feedback: Feedback;
+  /** 올가미로 끌어다 놓은 항목들 (분석 중 포함) */
+  extras: Issue[];
+  regionError: string | null;
+  onDropPiece: (piece: Piece, at: Pt) => void;
   onNext: () => void;
 }
 
@@ -20,23 +27,34 @@ const MAX_BOX_H = 640;
 const MAX_BOX_W = 460;
 const NOTE_GAP = 28;
 const LEFT_H = 600;
+const LEFT_MAX_W = 400;
 const clampZ = (z: number) => Math.max(0.6, Math.min(3, Math.round(z * 10) / 10));
 
-export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, lineArtInk, feedback, onNext }: Props) {
+export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, lineArtInk, lineArtRed, feedback, extras, regionError, onDropPiece, onNext }: Props) {
   const [trace, setTrace] = useState(true);
   const [showPhoto, setShowPhoto] = useState(false);
   const [overlay, setOverlay] = useState(false);
   const [view, setView] = useState({ z: 1, tx: 0, ty: 0 });
   const [sel, setSel] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
-  const [on, setOn] = useState<Record<string, boolean>>(() => Object.fromEntries(feedback.issues.map((i) => [i.id, true])));
+  const [off, setOff] = useState<Record<string, boolean>>({});
+  const isOn = (id: string) => !off[id];
+  // 올가미: 그리는 중인 점, 확정된 선택, 끌고 가는 고스트 위치 (모두 기준 선화 0~1 좌표)
+  const [lasso, setLasso] = useState<Pt[] | null>(null);
+  const [selPoly, setSelPoly] = useState<Pt[] | null>(null);
+  const [ghost, setGhost] = useState<{ x: number; y: number } | null>(null);
+  const [overVp, setOverVp] = useState(false);
+  const mode = useRef<'lasso' | 'move' | null>(null);
+  const lpts = useRef<Pt[]>([]);
+  const traceRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
   const vpRef = useRef<HTMLDivElement>(null);
   const wheelAt = useRef(0);
 
   useEffect(() => {
-    setOn(Object.fromEntries(feedback.issues.map((i) => [i.id, true])));
+    setOff({});
     setSel(null);
+    setSelPoly(null);
     setView({ z: 1, tx: 0, ty: 0 });
   }, [feedback]);
 
@@ -70,11 +88,16 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
   const BX = -BW / 2, BY = (SHEET_H - BH) / 2;
 
   const parts = useMemo(() => {
-    const base = feedback.issues.map((it, i) => {
-      const ring = ringOf(it, BW, BH, 14, 40);
+    const toPart = (it: Issue, n: number, custom: boolean) => {
+      const ring = ringOf(it, BW, BH, 14, custom ? 48 : 40);
       const L = ring.cx < BW / 2;
-      return { it, n: i + 1, L, px: BX + ring.cx, py: BY + ring.cy, r: ring.r, e: L ? BX - NOTE_GAP : BX + BW + NOTE_GAP };
-    });
+      return { it, n, L, px: BX + ring.cx, py: BY + ring.cy, r: ring.r, e: L ? BX - NOTE_GAP : BX + BW + NOTE_GAP, custom };
+    };
+    // 끌어다 놓은 조각도 같은 메모 열에 놓고, 한쪽 메모끼리 겹치지 않게 함께 정리
+    const base = [
+      ...feedback.issues.map((it, i) => toPart(it, i + 1, false)),
+      ...extras.filter((it) => !it.pending).map((it, j) => toPart(it, feedback.issues.length + j + 1, true)),
+    ];
     const ny = new Array<number>(base.length);
     for (const side of [true, false]) {
       const idx = base.map((b, i) => (b.L === side ? i : -1)).filter((i) => i >= 0);
@@ -82,13 +105,19 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
       idx.forEach((i, k) => (ny[i] = ys[k]));
     }
     return base.map((b, i) => ({ ...b, ny: ny[i] }));
-  }, [feedback, BW, BH, BX, BY]);
+  }, [feedback, extras, BW, BH, BX, BY]);
+  const pendings = extras
+    .filter((it) => it.pending)
+    .map((it) => {
+      const ring = ringOf(it, BW, BH, 14, 48);
+      return { id: it.id, px: BX + ring.cx, py: BY + ring.cy, r: ring.r };
+    });
 
   const { z, tx, ty } = view;
   let active: string | null = null;
   if (z >= 1.2) {
-    const live = parts.filter((p) => on[p.it.id]);
-    if (sel && on[sel]) active = sel;
+    const live = parts.filter((p) => isOn(p.it.id));
+    if (sel && isOn(sel)) active = sel;
     else {
       let best = Infinity;
       for (const p of live) {
@@ -102,10 +131,79 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
   }
   const reveal = Math.max(0, Math.min(1, (z - 1.2) / 0.5));
   const animate = !dragging && Date.now() - wheelAt.current > 250;
-  const onCount = parts.filter((p) => on[p.it.id]).length;
-  const visible = feedback.issues.filter((i) => on[i.id]);
+  const onCount = parts.filter((p) => isOn(p.it.id)).length;
+  const visible = feedback.issues.filter((i) => isOn(i.id));
+  const visibleExtras = extras.filter((i) => i.pending || isOn(i.id));
 
   const k = LEFT_H / SHEET_H;
+  // 왼쪽 기준 선화 박스: 기준 선화 비율 그대로 (올가미 좌표 = 기준 선화 0~1 좌표)
+  const la = lineArt.w / lineArt.h;
+  let LH = BH * k, LW = LH * la;
+  if (LW > LEFT_MAX_W) {
+    LW = LEFT_MAX_W;
+    LH = LW / la;
+  }
+
+  const localPt = (e: { clientX: number; clientY: number }): Pt => {
+    const r = traceRef.current!.getBoundingClientRect();
+    return { x: Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), y: Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)) };
+  };
+  const overViewport = (e: { clientX: number; clientY: number }) => {
+    const r = vpRef.current?.getBoundingClientRect();
+    return !!r && e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+  };
+  const lDown = (e: RPointerEvent<HTMLDivElement>) => {
+    if (!trace || e.button !== 0) return;
+    const p = localPt(e);
+    e.currentTarget.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    if (selPoly && inPoly(p, selPoly)) {
+      mode.current = 'move';
+      setGhost({ x: e.clientX, y: e.clientY });
+      setOverVp(false);
+    } else {
+      mode.current = 'lasso';
+      lpts.current = [p];
+      setLasso([p]);
+      setSelPoly(null);
+    }
+  };
+  const lMove = (e: RPointerEvent<HTMLDivElement>) => {
+    if (mode.current === 'lasso') {
+      const p = localPt(e), last = lpts.current[lpts.current.length - 1];
+      if (Math.hypot((p.x - last.x) * LW * z, (p.y - last.y) * LH * z) > 3) {
+        lpts.current.push(p);
+        setLasso(lpts.current.slice());
+      }
+    } else if (mode.current === 'move') {
+      setGhost({ x: e.clientX, y: e.clientY });
+      setOverVp(overViewport(e));
+    }
+  };
+  const lUp = (e: RPointerEvent<HTMLDivElement>) => {
+    if (mode.current === 'lasso') {
+      const pts = lpts.current;
+      const b = bounds(pts);
+      const ok = pts.length >= 5 && b.w * LW * b.h * LH > 300;
+      setLasso(null);
+      setSelPoly(ok ? pts.slice() : null);
+    } else if (mode.current === 'move') {
+      if (selPoly && overViewport(e)) {
+        // 놓은 지점을 시트 좌표 → 크로키 박스 % 로
+        const r = vpRef.current!.getBoundingClientRect();
+        const ox = e.clientX - (r.left + r.width / 2), oy = e.clientY - (r.top + r.height / 2);
+        const sx = ox / z - tx, sy = oy / z - ty + SHEET_H / 2;
+        onDropPiece({ poly: selPoly, ...bounds(selPoly) }, { x: ((sx - BX) / BW) * 100, y: ((sy - BY) / BH) * 100 });
+        setSelPoly(null);
+      }
+      setGhost(null);
+      setOverVp(false);
+    }
+    mode.current = null;
+  };
+  const selShown = lasso ?? selPoly;
+  const leftHint = !trace ? '기준 선화를 켜면 올가미로 고를 수 있어요' : selPoly ? '고른 부분을 끌어서 내 크로키 위에 놓으세요' : '기준 선화 위를 드래그해서 올가미로 고르기';
+  const ghostBox = ghost && selPoly ? bounds(selPoly) : null;
   const fit: CSSProperties['objectFit'] = aligned ? 'fill' : 'contain';
 
   const onDown = (e: RPointerEvent<HTMLDivElement>) => {
@@ -145,20 +243,44 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
           </div>
           <div className="left-stage">
             <div
+              ref={traceRef}
+              onPointerDown={lDown}
+              onPointerMove={lMove}
+              onPointerUp={lUp}
+              onPointerCancel={lUp}
               style={{
                 position: 'relative',
-                height: BH * k,
-                width: BW * k,
+                height: LH,
+                width: LW,
                 flex: 'none',
+                touchAction: 'none',
+                userSelect: 'none',
+                cursor: !trace ? 'default' : ghost ? 'grabbing' : selPoly ? 'grab' : 'crosshair',
                 transformOrigin: 'center',
                 transform: `scale(${z}) translate(${tx * k}px, ${ty * k}px)`,
                 transition: animate ? 'transform 0.35s ease' : undefined,
               }}
             >
               {showPhoto && (
-                <img src={photo.url} alt="원본 사진" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: fit, borderRadius: 6, opacity: trace ? 0.45 : 1 }} />
+                <img src={photo.url} alt="원본 사진" draggable={false} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'fill', borderRadius: 6, opacity: trace ? 0.45 : 1 }} />
               )}
-              {trace && <img src={lineArt.url} alt="기준 선화" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: fit, mixBlendMode: 'multiply' }} />}
+              {trace && <img src={lineArt.url} alt="기준 선화" draggable={false} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', mixBlendMode: 'multiply' }} />}
+              {trace && selPoly && (
+                <img src={lineArtRed} alt="" draggable={false} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', clipPath: clipPoly(selPoly) }} />
+              )}
+              {trace && selShown && (
+                <svg viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }}>
+                  <polygon
+                    points={selShown.map((p) => `${p.x},${p.y}`).join(' ')}
+                    fill="rgba(211,38,62,0.07)"
+                    stroke="#D3263E"
+                    strokeWidth="1.5"
+                    strokeDasharray="5 4"
+                    strokeLinejoin="round"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                </svg>
+              )}
               {!trace && !showPhoto && (
                 <div className="left-empty">
                   기준 선화나 원본 사진을
@@ -167,6 +289,9 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
                 </div>
               )}
             </div>
+            <span className="viewport__hint" style={selPoly ? { background: 'var(--accent)' } : undefined}>
+              {leftHint}
+            </span>
           </div>
         </section>
 
@@ -182,8 +307,8 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
               type="button"
               className="btn btn--sm"
               onClick={() => {
-                const v = onCount === 0;
-                setOn(Object.fromEntries(parts.map((p) => [p.it.id, v])));
+                const hide = onCount > 0;
+                setOff(Object.fromEntries(parts.map((p) => [p.it.id, hide])));
               }}
             >
               {onCount ? '빨간 선 모두 끄기' : '빨간 선 모두 켜기'}
@@ -248,11 +373,27 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
                   <img src={lineArtInk} alt="" draggable={false} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: fit, opacity: 0.3, pointerEvents: 'none' }} />
                 )}
                 <CorrectionLayer issues={visible} />
+                <PieceLayer issues={visibleExtras} redLineArt={lineArtRed} />
               </div>
+
+              {pendings.map((p) => (
+                <span key={p.id} aria-hidden="true">
+                  <span
+                    className="pulse"
+                    style={{ position: 'absolute', left: `calc(50% + ${p.px - p.r}px)`, top: p.py - p.r, width: p.r * 2, height: p.r * 2, border: '2px dashed var(--accent)', borderRadius: '50%', pointerEvents: 'none' }}
+                  />
+                  <span
+                    className="pulse note-title"
+                    style={{ position: 'absolute', left: `calc(50% + ${p.px}px)`, top: p.py - p.r - 32, transform: 'translateX(-50%)', fontSize: 24, color: '#C21F36', whiteSpace: 'nowrap', pointerEvents: 'none' }}
+                  >
+                    분석 중…
+                  </span>
+                </span>
+              ))}
 
               <svg width="1200" height={SHEET_H} viewBox={`-600 0 1200 ${SHEET_H}`} fill="none" aria-hidden="true" style={{ position: 'absolute', left: 'calc(50% - 600px)', top: 0, pointerEvents: 'none', overflow: 'visible' }}>
                 {parts
-                  .filter((p) => on[p.it.id])
+                  .filter((p) => isOn(p.it.id))
                   .map((p) => {
                     const ax = p.L ? p.e + 2 : p.e - 2, ay = p.ny + 15;
                     const ex = p.L ? p.px - p.r : p.px + p.r;
@@ -268,7 +409,7 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
 
               {parts.map((p) => {
                 const id = p.it.id;
-                const isOn = !!on[id];
+                const shown = isOn(id);
                 const isActive = active === id;
                 const a = isActive ? reveal : 0;
                 const dist = Math.abs(p.e);
@@ -291,12 +432,12 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
                     <button
                       type="button"
                       className="note-btn"
-                      aria-pressed={isOn}
+                      aria-pressed={shown}
                       title="클릭: 확대 · 오른쪽 클릭: 빨간 선 켜기/끄기"
                       style={{ alignItems: p.L ? 'flex-end' : 'flex-start', textAlign: p.L ? 'right' : 'left' }}
                       onContextMenu={(e) => {
                         e.preventDefault();
-                        setOn({ ...on, [id]: !isOn });
+                        setOff({ ...off, [id]: shown });
                       }}
                       onClick={() => {
                         if (sel === id) {
@@ -310,11 +451,12 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
                         setView({ z: 1.8, tx: -mx, ty: 350 - my });
                       }}
                     >
-                      <span className="note-title" style={{ color: isOn ? '#C21F36' : '#8A8478' }}>
+                      <span className="note-title" style={{ color: shown ? '#C21F36' : '#8A8478' }}>
                         {p.n}. {p.it.name}
+                        {p.custom && ' (선택)'}
                       </span>
-                      {isOn && <span className="note-fix">{p.it.fix}</span>}
-                      {isOn && (
+                      {shown && <span className="note-fix">{p.it.fix}</span>}
+                      {shown && (
                         <span style={{ position: 'relative', display: 'block', width: '100%', maxWidth: 150, marginTop: 3 }}>
                           <span
                             aria-hidden="true"
@@ -360,10 +502,21 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
                 );
               })}
             </div>
-            <span className="viewport__hint">드래그로 이동 · Ctrl+휠로 확대하면 상세 설명 · 메모 오른쪽 클릭으로 켜고 끄기</span>
+            {ghost && overVp && (
+              <div className="drop-target">
+                <span>여기에 놓으면 이 부분을 빨간 펜으로 첨삭해요</span>
+              </div>
+            )}
+            <span className="viewport__hint">드래그로 이동 · Ctrl+휠로 확대 · 왼쪽 기준 선화에서 올가미로 골라 여기로 끌어오기</span>
           </div>
         </section>
       </div>
+
+      {regionError && (
+        <div className="alert" role="alert">
+          {regionError}
+        </div>
+      )}
 
       <div className="summary">
         <div className="summary__good">
@@ -375,6 +528,37 @@ export function CompareScreen({ photo, lineArt, croquis, aligned, croquisInk, li
           <ArrowRightIcon />
         </button>
       </div>
+
+      {ghost && selPoly && ghostBox && (
+        <div
+          aria-hidden="true"
+          style={{
+            position: 'fixed',
+            left: ghost.x - (ghostBox.w * BW * z) / 2,
+            top: ghost.y - (ghostBox.h * BH * z) / 2,
+            width: ghostBox.w * BW * z,
+            height: ghostBox.h * BH * z,
+            pointerEvents: 'none',
+            zIndex: 50,
+            opacity: 0.9,
+          }}
+        >
+          <img
+            src={lineArtRed}
+            alt=""
+            draggable={false}
+            style={{
+              position: 'absolute',
+              left: `${(-ghostBox.x0 / ghostBox.w) * 100}%`,
+              top: `${(-ghostBox.y0 / ghostBox.h) * 100}%`,
+              width: `${100 / ghostBox.w}%`,
+              height: `${100 / ghostBox.h}%`,
+              maxWidth: 'none',
+              clipPath: clipPoly(selPoly),
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 }

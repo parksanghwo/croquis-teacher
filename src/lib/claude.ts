@@ -44,19 +44,71 @@ const SYSTEM = `당신은 인체 크로키를 가르치는 친절한 미술 선�
 - 실제로 크로키에서 보이는 차이만 지적하세요. 사소한 디테일보다 큰 형태를 먼저.
 - 한국어로, 반말이 아닌 부드러운 말투로 짧게 씁니다.`;
 
+const RegionSchema = z.object({
+  name: z.string().describe('부위 이름, 6자 이내'),
+  fix: z.string().describe('고칠 점 한 구절, 15자 이내'),
+  why: z.string().describe('내 선과 기준선이 어떻게 다른지 한 문장'),
+  how: z.string().describe('어떻게 고칠지 한 문장'),
+});
+
 export class MissingKeyError extends Error {}
+
+const image = (img: Img) => ({ type: 'image' as const, source: { type: 'base64' as const, ...toBase64(img) } });
+
+function client() {
+  const apiKey = getApiKey();
+  if (!apiKey) throw new MissingKeyError('API 키가 필요해요.');
+  // 브라우저에서 직접 호출: 키는 이 기기에만 저장되고 Anthropic API로만 전송됨
+  return new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
+}
+
+function checkStop(stop: string | null) {
+  if (stop === 'refusal') throw new Error('이 이미지는 첨삭할 수 없다는 응답을 받았어요. 다른 사진으로 시도해 주세요.');
+  if (stop === 'max_tokens') throw new Error('응답이 너무 길어 잘렸어요. 다시 시도해 주세요.');
+}
+
+/** 학생이 기준 선화에서 고른 조각을 내 크로키의 특정 위치에 놓았을 때, 그 부위 하나만 비교 */
+export async function requestRegionCritique(
+  images: { lineArt: Img; region: Img; croquis: Img },
+  at: { x: number; y: number; w: number; h: number },
+  settings: CritiqueSettings,
+): Promise<{ name: string; fix: string; why: string; how: string }> {
+  const response = await client().beta.messages.parse({
+    model: getModel(),
+    max_tokens: 16000,
+    betas: ['server-side-fallback-2026-07-01'],
+    fallbacks: 'default',
+    output_config: { effort: 'medium', format: betaZodOutputFormat(RegionSchema) },
+    system: SYSTEM,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          image(images.lineArt),
+          image(images.region),
+          image(images.croquis),
+          {
+            type: 'text',
+            text:
+              `이번에는 이미지가 다르게 주어져요: 1) 기준 선화 전체, 2) 학생이 기준 선화에서 올가미로 고른 조각, 3) 학생의 크로키.\n` +
+              `학생은 이 조각을 크로키 위 가로 ${at.x.toFixed(0)}%, 세로 ${at.y.toFixed(0)}% 위치(조각 크기 약 ${at.w.toFixed(0)}%×${at.h.toFixed(0)}%)에 겹쳐 놓았어요.\n` +
+              `그 자리에 있는 학생의 선과 고른 기준선을 비교해서 고칠 점 하나만 알려 주세요.\n` +
+              (settings.detailedTone ? 'why/how는 구체적으로 쓰세요.' : 'why/how는 각각 25자 안팎으로 짧게 쓰세요.'),
+          },
+        ],
+      },
+    ],
+  });
+  checkStop(response.stop_reason);
+  if (!response.parsed_output) throw new Error('첨삭 결과를 해석하지 못했어요. 다시 시도해 주세요.');
+  return response.parsed_output;
+}
 
 export async function requestCritique(
   images: { photo: Img; lineArt: Img; croquis: Img },
   settings: CritiqueSettings,
   signal?: AbortSignal,
 ): Promise<Feedback> {
-  const apiKey = getApiKey();
-  if (!apiKey) throw new MissingKeyError('API 키가 필요해요.');
-
-  // 브라우저에서 직접 호출: 키는 이 기기에만 저장되고 Anthropic API로만 전송됨
-  const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
-
   const brief = [
     `연습 시간: ${settings.time} 크로키 (짧을수록 큰 흐름 위주로 너그럽게 봐 주세요)`,
     settings.focus.length ? `중점: ${settings.focus.join(', ')}` : '중점: 전체',
@@ -66,9 +118,8 @@ export async function requestCritique(
       : 'why/how는 각각 25자 안팎으로 짧게 쓰세요.',
   ].join('\n');
 
-  const image = (img: Img) => ({ type: 'image' as const, source: { type: 'base64' as const, ...toBase64(img) } });
 
-  const response = await client.beta.messages.parse(
+  const response = await client().beta.messages.parse(
     {
       model: getModel(),
       max_tokens: 16000,
@@ -91,8 +142,7 @@ export async function requestCritique(
     { signal },
   );
 
-  if (response.stop_reason === 'refusal') throw new Error('이 이미지는 첨삭할 수 없다는 응답을 받았어요. 다른 사진으로 시도해 주세요.');
-  if (response.stop_reason === 'max_tokens') throw new Error('응답이 너무 길어 잘렸어요. 다시 시도해 주세요.');
+  checkStop(response.stop_reason);
   const out = response.parsed_output;
   if (!out) throw new Error('첨삭 결과를 해석하지 못했어요. 다시 시도해 주세요.');
 

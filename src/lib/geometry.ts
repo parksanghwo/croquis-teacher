@@ -16,6 +16,10 @@ export function smoothPath(pts: Pt[]): string {
 
 /** 박스(px) 안에서 항목의 표시 원 중심·반지름 */
 export function ringOf(it: Issue, boxW: number, boxH: number, minR = 16, maxR = 48) {
+  if (it.piece) {
+    const span = Math.max(it.piece.w * boxW, it.piece.h * boxH);
+    return { cx: (it.x / 100) * boxW, cy: (it.y / 100) * boxH, r: Math.round(Math.max(minR, Math.min(maxR + 12, span / 2 + 6))) };
+  }
   const pts = it.strokes.flat();
   if (!pts.length) return { cx: (it.x / 100) * boxW, cy: (it.y / 100) * boxH, r: minR + 4 };
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -48,3 +52,25 @@ export function spread(ys: number[], gap: number, min: number, max: number): num
   }
   return out;
 }
+
+/** 점들의 경계 상자 (0~1 좌표) */
+export function bounds(pts: Pt[]) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of pts) {
+    x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x);
+    y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y);
+  }
+  return { x0, y0, w: x1 - x0, h: y1 - y0 };
+}
+
+export function inPoly(pt: Pt, poly: Pt[]) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i], b = poly[j];
+    if (a.y > pt.y !== b.y > pt.y && pt.x < ((b.x - a.x) * (pt.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+/** 이미지(0~1 좌표) 위의 다각형을 CSS clip-path로 */
+export const clipPoly = (poly: Pt[]) => `polygon(${poly.map((p) => `${(p.x * 100).toFixed(2)}% ${(p.y * 100).toFixed(2)}%`).join(', ')})`;

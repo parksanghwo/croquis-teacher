@@ -1,20 +1,24 @@
 import { useEffect, useState } from 'react';
-import type { CritiqueSettings, Feedback, Img } from '../types';
+import type { CritiqueSettings, Feedback, Img, Issue } from '../types';
 import { CorrectionLayer } from '../components/CorrectionLayer';
+import { PieceLayer } from '../components/PieceLayer';
 import { TrashIcon } from '../components/Icons';
-import { ringOf } from '../lib/geometry';
+import { ringOf, spread } from '../lib/geometry';
 
 interface Props {
   croquis: Img;
   croquisInk: string;
+  lineArtRed: string;
   feedback: Feedback;
+  /** 오버랩 첨삭에서 올가미로 추가한 항목 */
+  extras: Issue[];
   settings: CritiqueSettings;
 }
 
 const MAX_H = 700;
 const MAX_W = 360;
 
-export function ReportScreen({ croquis, croquisInk, feedback, settings }: Props) {
+export function ReportScreen({ croquis, croquisInk, lineArtRed, feedback, extras, settings }: Props) {
   const [removed, setRemoved] = useState<string[]>([]);
   const [sel, setSel] = useState<string | null>(null);
   useEffect(() => {
@@ -22,13 +26,22 @@ export function ReportScreen({ croquis, croquisInk, feedback, settings }: Props)
     setSel(null);
   }, [feedback]);
 
-  const all = feedback.issues;
+  const all = [...feedback.issues, ...extras.map((x) => ({ ...x, name: `${x.name} (선택)` }))];
   const visible = all.filter((it) => !removed.includes(it.id));
   const aspect = croquis.w / croquis.h;
   let H = MAX_H, W = H * aspect;
   if (W > MAX_W) {
     W = MAX_W;
     H = W / aspect;
+  }
+
+  // 원 옆 이름표: 같은 쪽끼리 세로로 겹치지 않게
+  const rings = visible.map((it) => ringOf(it, W, H, 20, 44));
+  const tagY = new Array<number>(visible.length);
+  for (const left of [true, false]) {
+    const idx = rings.map((r, i) => ((r.cx < W / 2) === left ? i : -1)).filter((i) => i >= 0);
+    const ys = spread(idx.map((i) => rings[i].cy), 40, 22, H - 22);
+    idx.forEach((i, k) => (tagY[i] = ys[k]));
   }
 
   const remove = (id: string) => {
@@ -61,9 +74,10 @@ export function ReportScreen({ croquis, croquisInk, feedback, settings }: Props)
           <div style={{ position: 'relative', width: W, height: H, flex: 'none', margin: '0 150px', maxWidth: '100%' }}>
             <img src={croquisInk} alt="내 크로키" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }} />
             <CorrectionLayer issues={visible} opacity={0.88} />
-            {visible.map((it) => {
+            <PieceLayer issues={visible} redLineArt={lineArtRed} opacity={0.88} />
+            {visible.map((it, vi) => {
               const n = all.indexOf(it) + 1;
-              const { cx, cy, r } = ringOf(it, W, H, 20, 44);
+              const { cx, cy, r } = rings[vi];
               const L = cx < W / 2;
               const selected = sel === it.id;
               return (
@@ -89,7 +103,7 @@ export function ReportScreen({ croquis, croquisInk, feedback, settings }: Props)
                     onClick={() => pick(it.id)}
                     onKeyDown={onKey(it.id)}
                     style={{
-                      top: cy,
+                      top: tagY[vi],
                       flexDirection: L ? 'row-reverse' : 'row',
                       ...(L ? { right: W - cx + r + 6 } : { left: cx + r + 6 }),
                     }}

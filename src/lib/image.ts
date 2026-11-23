@@ -184,18 +184,36 @@ export async function crop(src: Img, r: Rect | null): Promise<Img> {
 }
 
 /** 흰 종이를 투명하게: 화면에서 줄 노트 위에 선만 얹을 때 쓴다 */
-export async function toInk(src: Img): Promise<string> {
+export async function toInk(src: Img, rgb: [number, number, number] = [27, 27, 31]): Promise<string> {
   const { c, ctx, data } = await pixels(src);
   const d = data.data;
   for (let i = 0; i < d.length; i += 4) {
     const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
     const a = 255 - lum;
     // 알파를 빼낸 뒤 원래 색이 되도록 (흰 바탕 기준 역합성), 회색 선은 짙은 잉크색으로
-    d[i] = d[i + 1] = d[i + 2] = 27;
+    d[i] = rgb[0];
+    d[i + 1] = rgb[1];
+    d[i + 2] = rgb[2];
     d[i + 3] = Math.max(0, Math.min(255, a * (255 / 228)));
   }
   ctx.putImageData(data, 0, 0);
   return c.toDataURL('image/png');
+}
+
+/** 올가미 영역만 남기고(바깥은 흰색) 그 영역의 경계 상자로 잘라낸다. poly는 0~1 좌표 */
+export async function cutRegion(src: Img, poly: { x: number; y: number }[], b: { x0: number; y0: number; w: number; h: number }): Promise<Img> {
+  const img = await loadImage(src.url);
+  const x = Math.floor(b.x0 * src.w), y = Math.floor(b.y0 * src.h);
+  const w = Math.max(1, Math.ceil(b.w * src.w)), h = Math.max(1, Math.ceil(b.h * src.h));
+  const { c, ctx } = canvas(w, h);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, w, h);
+  ctx.beginPath();
+  poly.forEach((p, i) => (i ? ctx.lineTo : ctx.moveTo).call(ctx, p.x * src.w - x, p.y * src.h - y));
+  ctx.closePath();
+  ctx.clip();
+  ctx.drawImage(img, -x, -y);
+  return { url: c.toDataURL('image/png'), w, h };
 }
 
 /** data URL → API에 보낼 base64 + 미디어 타입 */
