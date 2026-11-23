@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { DEFAULT_MODEL, getApiKey, getModel, saveSettings } from '../lib/settings';
+import { DEFAULT_MODEL, getModel, getSavedKey, hasEnvKey, saveSettings } from '../lib/settings';
 
 interface Props {
   open: boolean;
@@ -16,7 +16,7 @@ export function ApiKeyDialog({ open, onClose }: Props) {
     const d = ref.current;
     if (!d) return;
     if (open && !d.open) {
-      setKey(getApiKey());
+      setKey(getSavedKey());
       setModel(getModel());
       d.showModal();
     } else if (!open && d.open) d.close();
@@ -36,7 +36,14 @@ export function ApiKeyDialog({ open, onClose }: Props) {
         <p>첨삭은 OpenAI 모델이 해요. 키는 이 브라우저에만 저장되고, 요청은 브라우저에서 OpenAI API로 바로 가요.</p>
         <label className="field">
           API 키
-          <input type="password" autoComplete="off" spellCheck={false} placeholder="sk-…" value={key} onChange={(e) => setKey(e.target.value)} />
+          <input
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            placeholder={hasEnvKey() ? '.env의 키 사용 중 (여기 입력하면 이 키가 우선)' : 'sk-…'}
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+          />
         </label>
         <label className="field">
           모델

@@ -2,7 +2,12 @@
 const KEY = 'croquis-teacher.openaiKey';
 const MODEL = 'croquis-teacher.openaiModel';
 
-export const DEFAULT_MODEL = 'gpt-6-luna';
+// .env 값은 개발 서버(npm run dev)에서만 읽는다.
+// 빌드(npm run build)에서는 DEV가 false라 키 문자열이 결과물에 들어가지 않는다.
+const ENV_KEY = import.meta.env.DEV ? (import.meta.env.VITE_OPENAI_API_KEY ?? '').trim() : '';
+const ENV_MODEL = import.meta.env.DEV ? (import.meta.env.VITE_OPENAI_MODEL ?? '').trim() : '';
+
+export const DEFAULT_MODEL = ENV_MODEL || 'gpt-6-luna';
 
 function read(k: string): string {
   try {
@@ -23,7 +28,11 @@ function write(k: string, v: string) {
 let memKey = read(KEY);
 let memModel = read(MODEL) || DEFAULT_MODEL;
 
-export const getApiKey = () => memKey;
+/** 창에서 입력한 키가 우선, 없으면 .env 키 */
+export const getApiKey = () => memKey || ENV_KEY;
+/** 창에서 직접 입력해 저장한 키만 (입력창 채우기용) */
+export const getSavedKey = () => memKey;
+export const hasEnvKey = () => !!ENV_KEY;
 export const getModel = () => memModel;
 export function saveSettings(apiKey: string, model: string, remember: boolean) {
   memKey = apiKey.trim();
