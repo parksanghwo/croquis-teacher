@@ -304,6 +304,13 @@ function connect(src, side, tgt) {
   renderLinks(); scheduleSave();
 }
 /* ---------- arrow click → overlay of the two images at 50% each (built by the backend) ---------- */
+/** " 도착 그림을 112%로 키우고 위치를 맞췄습니다" — how the server fitted the arrow's end onto its start */
+function fitNote(a) {
+  if (!a) return '';
+  const pct = Math.round(a.scale * 100);
+  const size = pct === 100 ? '크기는 그대로 두고' : `도착 그림을 ${pct}%로 ${pct > 100 ? '키우고' : '줄이고'}`;
+  return ` ${size} 위치를 맞췄습니다`;
+}
 let overlayBusy = false;
 /* keep existing overlays in step when either side changes */
 function refreshOverlaysFor(id) {
@@ -329,13 +336,13 @@ async function makeOverlay(l, silent) {
       delete it.cover; delete it.pos; delete it.zoom;
       fillContent(it, it.el); layout(it);
       const tag = it.el.querySelector('.tag'); if (tag) tag.textContent = r.label;
-      if (!silent) toast(res.ai ? 'AI 선화로 겹쳐 보기를 새로 고쳤습니다' : '겹쳐 보기를 새로 고쳤습니다');
+      if (!silent) toast(res.ai ? `AI 선화로 겹쳐 보기를 새로 고쳤습니다.${fitNote(res.alignment)}` : '겹쳐 보기를 새로 고쳤습니다', 3200);
     } else {
       it = { ...r };
       orderCounter = Math.max(orderCounter, it.order);
       items.push(it); makeEl(it);
-      toast(res.ai ? 'AI로 추출한 두 선화를 50%씩 겹쳐 옆에 놓았습니다'
-                   : '원본을 50%씩 겹쳤습니다. 서버에 OpenAI API 키가 없어 선화 추출은 건너뛰었습니다', res.ai ? 2600 : 5000);
+      toast(res.ai ? `AI로 추출한 두 선화를 50%씩 겹쳤습니다.${fitNote(res.alignment)}`
+                   : '원본을 50%씩 겹쳤습니다. 서버에 OpenAI API 키가 없어 선화 추출은 건너뛰었습니다', res.ai ? 3600 : 5000);
     }
     l.overlay = res.link.overlay;
     markSent(it, l); // the server already has this state

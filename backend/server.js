@@ -186,7 +186,12 @@ api.post('/links/:id/overlay', async (req, res) => {
   }
 
   let png, width, height;
-  try { ({ png, width, height } = await composeOverlay(A, B, drawA, drawB)); }
+  // Auto-fit the drawings onto each other only when both sides are lines (AI-extracted or
+  // pen strokes); on a raw photo the "dark pixels" would be the background, not the figure.
+  const isLines = it => !it.image || ai;
+  const align = isLines(A) && isLines(B);
+  let alignment = null;
+  try { ({ png, width, height, alignment } = await composeOverlay(A, B, drawA, drawB, { align })); }
   catch (err) { console.error('[overlay]', err); return res.status(500).json({ error: '겹쳐 보기 이미지를 만들지 못했습니다' }); }
   const label = ai ? '겹쳐 보기 · AI 선화 각 50%' : '겹쳐 보기 · 원본 각 50%';
 
@@ -212,7 +217,7 @@ api.post('/links/:id/overlay', async (req, res) => {
   }
   collectGarbage();
   persist();
-  res.status(created ? 201 : 200).json({ item: withUrl(ov), link, created, ai });
+  res.status(created ? 201 : 200).json({ item: withUrl(ov), link, created, ai, alignment });
 });
 
 // Lets the page say up front whether arrows will use AI line extraction.
