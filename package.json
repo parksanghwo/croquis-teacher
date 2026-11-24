@@ -1,7 +1,7 @@
 {
   "name": "photo-canvas",
   "version": "1.0.0",
-  "description": "무한 사진 캔버스: 사진을 끌어다 놓고, 화살표로 잇고, 겹쳐 보고, 펜으로 그리는 웹 보드",
+  "description": "끄로뀌끼끼끼끼익: 사진을 끌어다 놓고, 화살표로 잇고, 겹쳐 보고, 펜으로 그리는 웹 보드",
   "private": true,
   "type": "module",
   "scripts": {

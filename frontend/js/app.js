@@ -1,4 +1,4 @@
-// 무한 사진 캔버스 — frontend
+// 끄로뀌끼끼끼끼익 — frontend
 // Board UI: camera, items, arrows, knobs, drawing mode, viewer. Saving, image storage
 // and overlay composition go through the backend (see api.js).
 import { api } from './api.js';

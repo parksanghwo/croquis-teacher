@@ -1,4 +1,4 @@
-// 무한 사진 캔버스 — backend
+// 끄로뀌끼끼끼끼익 — backend
 // Serves the frontend, stores the board (items, arrows, camera) and uploaded images,
 // and builds the 50/50 overlay images.
 import fs from 'node:fs';
@@ -258,7 +258,7 @@ app.use('/images', express.static(UPLOAD_DIR, { immutable: true, maxAge: '365d',
 app.use(express.static(FRONTEND_DIR, { index: 'index.html' }));
 
 app.listen(PORT, () => {
-  console.log(`무한 사진 캔버스: http://localhost:${PORT}`);
+  console.log(`끄로뀌끼끼끼끼익: http://localhost:${PORT}`);
   console.log(aiEnabled()
     ? `AI 선화 추출 켜짐 (이미지 모델: ${aiConfig().model})`
     : 'AI 선화 추출 꺼짐: .env 에 OPENAI_API_KEY 를 넣으면 화살표 클릭 시 선화를 추출해 겹칩니다');
