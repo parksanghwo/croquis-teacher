@@ -3,6 +3,7 @@
 // and overlay composition go through the backend (see api.js).
 import { api } from './api.js';
 import { cropGeom, strokeSeg, drawStroke, renderStrokes } from './strokes.js';
+import { compareLayers } from './compare.js';
 
 const vp = document.getElementById('viewport');
 const world = document.getElementById('world');
@@ -96,6 +97,7 @@ function fillContent(it, el) {
       renderStrokes(c.getContext('2d'), it.strokes, c.width);
       node.appendChild(c);
     }
+    if (it.compare) queueMicrotask(() => refreshCompare(it));
   } else if (it.image) {
     node = document.createElement('div'); node.className = 'clip';
     const img = document.createElement('img'); img.src = it.url; img.alt = ''; img.draggable = false;
@@ -334,6 +336,41 @@ function fitNote(a) {
   return ` ${size} 위치를 맞췄습니다`;
 }
 const REF_OPACITY = 0.3; // photo line art in the overlay
+
+/**
+ * Compare mode on an overlay (Enter): the reference line art turns red where it differs
+ * strongly from the croquis and fades where they match. Recomputed whenever the croquis
+ * layer moves; the result is not stored, only whether the mode is on.
+ */
+async function refreshCompare(it, announce) {
+  const imgA = it.el && it.el.querySelector('img.layer-a');
+  if (!imgA) return;
+  const token = (it._cmpToken || 0) + 1; it._cmpToken = token;
+  if (!it.compare || !it.layers) {
+    it.el.classList.remove('comparing');
+    it._diffUrl = null;
+    imgA.src = it.layerUrls.a;
+    if (announce) toast('비교를 끄고 원래대로 겹쳐 보입니다');
+    return;
+  }
+  if (announce) toast('선화와 크로키를 비교하는 중입니다', 0);
+  try {
+    const res = await compareLayers(it.layerUrls.a, it.layerUrls.b, it.fit);
+    if (it._cmpToken !== token || !it.compare) return; // a newer comparison or the mode was turned off
+    it._diffUrl = res.url;
+    imgA.src = res.url;
+    it.el.classList.add('comparing');
+    const pct = Math.round(res.redShare * 100);
+    if (announce) toast(pct ? `크로키와 크게 다른 부위를 빨갛게 표시했습니다 (선화의 ${pct}%). Enter를 다시 누르면 꺼집니다` : '크게 다른 부위가 없습니다. 맞는 선은 흐리게 표시했습니다', 4000);
+  } catch (err) {
+    if (it._cmpToken !== token) return;
+    it.compare = false;
+    it.el.classList.remove('comparing');
+    imgA.src = it.layerUrls.a;
+    toast(err.message, 6000);
+    scheduleSave();
+  }
+}
 let overlayBusy = false;
 /* keep existing overlays in step when either side changes */
 function refreshOverlaysFor(id) {
@@ -588,7 +625,7 @@ function endPointer(e) {
   if (mode === 'move' && drag && drag.moved) scheduleSave();
   if (mode === 'resize' && drag) { syncFrom(drag.it); refreshOverlaysFor(drag.it.id); scheduleSave(); }
   if (mode === 'crop' && drag) { refreshOverlaysFor(drag.it.id); scheduleSave(); }
-  if (mode === 'fit') scheduleSave();
+  if (mode === 'fit') { scheduleSave(); if (drag && drag.it.compare) refreshCompare(drag.it); }
   if (mode === 'spawn' && drag) {
     const tgt = linkTarget;
     clearSpawnPreview(); setLinkTarget(null);
@@ -664,7 +701,7 @@ vp.addEventListener('wheel', e => {
       layout(it);
       toast(`크로키 선화 크기 ${Math.round(s * 100)}%`, 900);
       clearTimeout(cropWheelTimer);
-      cropWheelTimer = setTimeout(scheduleSave, 250);
+      cropWheelTimer = setTimeout(() => { scheduleSave(); if (it.compare) refreshCompare(it); }, 250);
       return;
     }
     if (it && it.image && isOverlay(it)) { upgradeOverlay(it); return; } // never zoom the overlay as a whole
@@ -715,6 +752,18 @@ window.addEventListener('keydown', e => {
   }
   if (typing()) return;
   const mod = e.ctrlKey || e.metaKey;
+  if (e.key === 'Enter' && !mod && selected.size === 1) {
+    // Enter on a selected overlay: compare the line art with the croquis (again: back to normal)
+    const it = byId([...selected][0]);
+    if (it && isOverlay(it)) {
+      e.preventDefault();
+      if (!it.layers) { upgradeOverlay(it); return; }
+      it.compare = !it.compare;
+      refreshCompare(it, true);
+      scheduleSave();
+      return;
+    }
+  }
   if (e.code === 'Space') { if (!spaceDown) { spaceDown = true; vp.classList.add('space'); } e.preventDefault(); return; }
   if (e.key === 'Delete' || e.key === 'Backspace') { removeSelected(); e.preventDefault(); return; }
   if (e.key === 'Escape') { select([]); return; }
@@ -848,7 +897,8 @@ async function layeredPreview(it) {
   const c = document.createElement('canvas'); c.width = W; c.height = H;
   const g = c.getContext('2d');
   g.fillStyle = '#fff'; g.fillRect(0, 0, W, H);
-  if (!it.refOff) { g.globalAlpha = REF_OPACITY; g.drawImage(a, 0, 0, W, H); }
+  if (!it.refOff && it.compare && it._diffUrl) { g.drawImage(await load(it._diffUrl), 0, 0, W, H); }
+  else if (!it.refOff) { g.globalAlpha = REF_OPACITY; g.drawImage(a, 0, 0, W, H); }
   g.globalAlpha = 0.5;
   g.drawImage(b, f.dx * W, f.dy * H, W * f.s, H * f.s);
   return c.toDataURL('image/png');
@@ -1009,7 +1059,7 @@ let sentCam = '';
 const itemJSON = it => JSON.stringify({
   id: it.id, x: it.x, y: it.y, w: it.w, h: it.h, order: it.order, image: it.image || null,
   cover: !!it.cover, pos: it.pos || null, zoom: it.zoom || null, label: it.label || null,
-  example: !!it.example, strokes: it.strokes || null, layers: it.layers || null, fit: it.fit || null, refOff: !!it.refOff,
+  example: !!it.example, strokes: it.strokes || null, layers: it.layers || null, fit: it.fit || null, refOff: !!it.refOff, compare: !!it.compare,
 });
 const linkJSON = l => JSON.stringify({ id: l.id, from: l.from, to: l.to, side: l.side, overlay: l.overlay || null });
 const camJSON = () => JSON.stringify({ x: cam.x, y: cam.y, z: cam.z });

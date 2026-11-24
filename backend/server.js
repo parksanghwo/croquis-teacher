@@ -67,6 +67,7 @@ function cleanItem(id, body) {
   if (typeof body.label === 'string' && body.label) it.label = body.label.slice(0, 80);
   if (body.example) it.example = true;
   if (body.refOff) it.refOff = true;
+  if (body.compare) it.compare = true;
   const strokes = cleanStrokes(body.strokes);
   if (strokes) it.strokes = strokes;
   return it;

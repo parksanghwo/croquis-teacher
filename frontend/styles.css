@@ -167,3 +167,6 @@ body{background:var(--bg);color:var(--ink);font-family:var(--f-ui);overscroll-be
 .clip.layered img.layer-b{opacity:.5}
 .item.ref-off .clip.layered img.layer-a{display:none}
 .clip.layered canvas{opacity:1}
+
+/* compare mode (Enter): the recoloured reference already carries its own transparency */
+.item.comparing .clip.layered img.layer-a{opacity:1}
