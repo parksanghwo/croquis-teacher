@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>무한 사진 캔버스</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="viewport"><div id="world"><svg id="links" aria-hidden="true"></svg></div></div>
+
+<section id="help" class="panel" aria-label="사용법">
+  <h1><span>무한 사진 캔버스</span><button class="linkbtn" id="helpToggle" type="button">접기</button></h1>
+  <p>사진 파일을 끌어다 놓거나, 복사한 이미지를 <b>Ctrl/⌘ + V</b>로 붙여넣으세요. 캔버스는 어느 방향으로든 끝없이 이어집니다.</p>
+  <dl>
+    <dt>빈 곳 드래그</dt><dd>여러 장 선택</dd>
+    <dt>Space + 드래그</dt><dd>캔버스 이동 (휠 클릭·두 손가락도 가능)</dd>
+    <dt>휠 / 트랙패드</dt><dd>캔버스 이동</dd>
+    <dt>Ctrl + 휠, 핀치</dt><dd>확대·축소</dd>
+    <dt>모서리 점</dt><dd>비율 유지 크기 조절</dd>
+    <dt>상하좌우 노브</dt><dd>드래그해 놓은 자리에 같은 크기의 빈 캔버스 (클릭하면 바로 옆에)</dd>
+    <dt>노브 → 다른 사진</dt><dd>화살표로 연결, 받는 사진은 같은 크기·비율로 자동 크롭</dd>
+    <dt>화살표 클릭</dt><dd>두 이미지를 50%씩 겹쳐 받는 쪽 옆에 놓기</dd>
+    <dt>겹쳐 보기 더블클릭</dt><dd>이미지 위에 빨간 펜으로 그리기</dd>
+    <dt>Alt + 휠</dt><dd>사진을 틀 안에서 확대·축소 (겹쳐 보기 맞추기)</dd>
+    <dt>Alt + 드래그</dt><dd>틀 안에서 사진 위치 옮기기</dd>
+    <dt>빈 캔버스</dt><dd>사진을 놓거나 선택 후 붙여넣기</dd>
+    <dt>빈 캔버스 더블클릭</dt><dd>화면 가득 펼쳐서 펜으로 그리기</dd>
+    <dt>사진 더블클릭</dt><dd>전체화면으로 보기 (←/→ 넘기기, Esc 닫기)</dd>
+    <dt>Delete</dt><dd>선택한 사진 삭제</dd>
+    <dt>Ctrl + D</dt><dd>복제</dd>
+    <dt>Shift + 1</dt><dd>전체 보기</dd>
+  </dl>
+</section>
+
+<div id="toolbar" class="panel tb" role="toolbar" aria-label="캔버스 도구">
+  <button id="addBtn" class="primary" type="button" title="이미지 파일 선택">
+    <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span class="lbl">사진 추가</span></button>
+  <input id="fileInput" type="file" accept="image/*" multiple hidden>
+  <span class="sep"></span>
+  <button id="zoomOut" type="button" title="축소" aria-label="축소"><svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
+  <button id="zoomLabel" class="zoom" type="button" title="100%로 맞추기">100%</button>
+  <button id="zoomIn" type="button" title="확대" aria-label="확대"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+  <button id="fitBtn" type="button" title="모든 사진이 보이게 (Shift+1)">
+    <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg><span class="lbl">전체 보기</span></button>
+  <span class="sep"></span>
+  <button id="delBtn" class="danger" type="button" title="선택한 사진 삭제 (Delete)" disabled>
+    <svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg><span class="lbl">삭제</span></button>
+  <span class="sep"></span>
+  <span id="saveState" class="save-state" data-state="saved" role="status" aria-live="polite"><i></i><span class="lbl">저장됨</span></span>
+</div>
+
+<div id="lightbox" hidden role="dialog" aria-modal="true" aria-label="사진 크게 보기">
+  <img id="lbImg" alt="">
+  <button class="lb-btn lb-close" id="lbClose" type="button" aria-label="닫기 (Esc)" title="닫기 (Esc)"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  <button class="lb-btn lb-prev" id="lbPrev" type="button" aria-label="이전 사진" title="이전 사진 (←)"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
+  <button class="lb-btn lb-next" id="lbNext" type="button" aria-label="다음 사진" title="다음 사진 (→)"><svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button>
+  <div class="lb-count" id="lbCount"></div>
+</div>
+
+<div id="drawer" hidden role="dialog" aria-modal="true" aria-label="빈 캔버스에 그리기">
+  <div id="paper"><img id="paperImg" alt="" hidden><canvas id="drawCanvas"></canvas></div>
+  <div id="drawBar" class="panel tb" role="toolbar" aria-label="펜 도구">
+    <button type="button" data-size="0.003" title="가는 펜" aria-label="가는 펜"><span class="dot" style="width:4px;height:4px"></span></button>
+    <button type="button" data-size="0.006" title="보통 펜" aria-label="보통 펜" aria-pressed="true"><span class="dot" style="width:7px;height:7px"></span></button>
+    <button type="button" data-size="0.013" title="굵은 펜" aria-label="굵은 펜"><span class="dot" style="width:11px;height:11px"></span></button>
+    <span class="sep"></span>
+    <button id="undoBtn" type="button" title="실행 취소 (Ctrl+Z)" aria-label="실행 취소"><svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 010 10h-3"/></svg></button>
+    <button id="redoBtn" type="button" title="다시 실행 (Ctrl+Shift+Z)" aria-label="다시 실행"><svg viewBox="0 0 24 24"><path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 000 10h3"/></svg></button>
+    <button id="clearBtn" class="danger" type="button" title="모두 지우기 (실행 취소로 되돌릴 수 있음)"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg><span class="lbl">모두 지우기</span></button>
+    <span class="sep"></span>
+    <button id="doneBtn" class="primary" type="button" title="완료 (Esc)">완료</button>
+  </div>
+</div>
+
+<div id="drop" hidden>여기에 놓으면 캔버스에 추가됩니다</div>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
