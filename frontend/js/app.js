@@ -127,6 +127,7 @@ function layout(it) {
   const s = it.el.style;
   s.left = it.x + 'px'; s.top = it.y + 'px'; s.width = it.w + 'px'; s.height = it.h + 'px'; s.zIndex = it.order;
   it.el.classList.toggle('cover', !!it.cover);
+  it.el.classList.toggle('ref-off', !!it.refOff);
   const lb = it.layers && it.el.querySelector('img.layer-b');
   const img = !it.layers && it.el.querySelector('img');
   if (lb) {
@@ -324,7 +325,7 @@ function connect(src, side, tgt) {
   toast(tgt.image ? '같은 크기·비율로 맞춰 잘랐습니다. Alt+드래그로 위치를 옮길 수 있습니다' : '화살표로 연결하고, 같은 크기로 맞췄습니다');
   renderLinks(); scheduleSave();
 }
-/* ---------- arrow click → overlay of the two images at 50% each (built by the backend) ---------- */
+/* ---------- arrow click → overlay: reference line art at 30%, croquis at 50% (built by the backend) ---------- */
 /** " 도착 그림을 112%로 키우고 위치를 맞췄습니다" — how the server fitted the arrow's end onto its start */
 function fitNote(a) {
   if (!a) return '';
@@ -332,6 +333,7 @@ function fitNote(a) {
   const size = pct === 100 ? '크기는 그대로 두고' : `도착 그림을 ${pct}%로 ${pct > 100 ? '키우고' : '줄이고'}`;
   return ` ${size} 위치를 맞췄습니다`;
 }
+const REF_OPACITY = 0.3; // photo line art in the overlay
 let overlayBusy = false;
 /* keep existing overlays in step when either side changes */
 function refreshOverlaysFor(id) {
@@ -364,8 +366,8 @@ async function makeOverlay(l, silent) {
       it = { ...r };
       orderCounter = Math.max(orderCounter, it.order);
       items.push(it); makeEl(it);
-      toast(res.ai ? `AI로 추출한 두 선화를 50%씩 겹쳤습니다.${fitNote(res.alignment)}`
-                   : '원본을 50%씩 겹쳤습니다. 서버에 OpenAI API 키가 없어 선화 추출은 건너뛰었습니다', res.ai ? 3600 : 5000);
+      toast(res.ai ? `AI로 추출한 사진 선화(30%)와 크로키 선화(50%)를 겹쳤습니다.${fitNote(res.alignment)}`
+                   : '원본을 겹쳤습니다(사진 30%, 크로키 50%). 서버에 OpenAI API 키가 없어 선화 추출은 건너뛰었습니다', res.ai ? 3600 : 5000);
     }
     l.overlay = res.link.overlay;
     markSent(it, l); // the server already has this state
@@ -603,6 +605,17 @@ function endPointer(e) {
 vp.addEventListener('pointerup', endPointer);
 vp.addEventListener('pointercancel', endPointer);
 vp.addEventListener('auxclick', e => e.preventDefault());
+// Right-click on an overlay: hide / show the reference (photo) line art
+vp.addEventListener('contextmenu', e => {
+  const it = itemAt(e.clientX, e.clientY);
+  if (!it || !isOverlay(it)) return;
+  e.preventDefault();
+  if (!it.layers) { upgradeOverlay(it); return; }
+  it.refOff = !it.refOff;
+  layout(it);
+  toast(it.refOff ? '사진 선화를 숨겼습니다. 다시 오른쪽 클릭하면 보입니다' : '사진 선화를 다시 표시합니다');
+  scheduleSave();
+});
 
 function updateMarquee(x, y) {
   const l = Math.min(x, drag.sx), t = Math.min(y, drag.sy), r = Math.max(x, drag.sx), b = Math.max(y, drag.sy);
@@ -823,7 +836,7 @@ function upgradeOverlay(it) {
   toast('겹쳐 보기를 크로키 층만 움직일 수 있게 다시 만드는 중입니다');
   makeOverlay(l, true);
 }
-/** The layered overlay as one picture (for the red-pen paper): white, then both layers at 50%. */
+/** The layered overlay as one picture (for the red-pen paper): white, reference at 30% (unless hidden), croquis at 50%. */
 async function layeredPreview(it) {
   const load = src => new Promise((ok, no) => { const im = new Image(); im.onload = () => ok(im); im.onerror = no; im.src = src; });
   const [a, b] = await Promise.all([load(it.layerUrls.a), load(it.layerUrls.b)]);
@@ -831,8 +844,8 @@ async function layeredPreview(it) {
   const c = document.createElement('canvas'); c.width = W; c.height = H;
   const g = c.getContext('2d');
   g.fillStyle = '#fff'; g.fillRect(0, 0, W, H);
+  if (!it.refOff) { g.globalAlpha = REF_OPACITY; g.drawImage(a, 0, 0, W, H); }
   g.globalAlpha = 0.5;
-  g.drawImage(a, 0, 0, W, H);
   g.drawImage(b, f.dx * W, f.dy * H, W * f.s, H * f.s);
   return c.toDataURL('image/png');
 }
@@ -992,7 +1005,7 @@ let sentCam = '';
 const itemJSON = it => JSON.stringify({
   id: it.id, x: it.x, y: it.y, w: it.w, h: it.h, order: it.order, image: it.image || null,
   cover: !!it.cover, pos: it.pos || null, zoom: it.zoom || null, label: it.label || null,
-  example: !!it.example, strokes: it.strokes || null, layers: it.layers || null, fit: it.fit || null,
+  example: !!it.example, strokes: it.strokes || null, layers: it.layers || null, fit: it.fit || null, refOff: !!it.refOff,
 });
 const linkJSON = l => JSON.stringify({ id: l.id, from: l.from, to: l.to, side: l.side, overlay: l.overlay || null });
 const camJSON = () => JSON.stringify({ x: cam.x, y: cam.y, z: cam.z });

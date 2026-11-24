@@ -25,6 +25,11 @@ function load() {
 
 export const board = load();
 
+// labels written by older versions ("각 50%") → current mix (photo line art 30%, croquis 50%)
+for (const it of Object.values(board.items)) {
+  if (it.label && it.label.endsWith(' 각 50%')) it.label = it.label.replace(' 각 50%', ' (사진 30% · 크로키 50%)');
+}
+
 let timer = null;
 let writing = Promise.resolve();
 export function persist() {

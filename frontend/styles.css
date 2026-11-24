@@ -162,5 +162,8 @@ body{background:var(--bg);color:var(--ink);font-family:var(--f-ui);overscroll-be
 
 /* AI overlay as live layers: white paper, each drawing at 50% */
 .clip.layered{background:#fff}
-.clip.layered img{opacity:.5}
+/* reference (photo) line art at 30%, croquis at 50%; right-click hides the reference */
+.clip.layered img.layer-a{opacity:.3}
+.clip.layered img.layer-b{opacity:.5}
+.item.ref-off .clip.layered img.layer-a{display:none}
 .clip.layered canvas{opacity:1}

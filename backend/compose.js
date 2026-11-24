@@ -130,7 +130,7 @@ export function fitFor(boxA, boxB, W, H) {
 const applyFit = (layer, fit, W, H) => place(layer, fit.dx * W, fit.dy * H, W * fit.s, H * fit.s, W, H);
 
 /**
- * Overlay of source A and target B at 50% each, at B's aspect ratio.
+ * Overlay of source A (30%) and target B (50%) on white, at B's aspect ratio.
  * B is placed by `fit`: the one given (set by hand), else with `align` the whole drawing
  * fitted automatically onto A's figure, else as shown on the board. Returns the flattened
  * PNG plus both transparent layers and the fit, so the page can keep adjusting B live.
@@ -156,7 +156,8 @@ export async function composeOverlay(A, B, drawA, drawB, { align = false, fit = 
   }
   const b = await onWhite(await applyFit(layerB, fit, W, H));
   const out = Buffer.allocUnsafe(a.length);
-  for (let i = 0; i < a.length; i++) out[i] = (a[i] + b[i] + 1) >> 1;
+  // same look as the page: white paper, reference at 30%, then the croquis at 50% on top
+  for (let i = 0; i < a.length; i++) out[i] = Math.round(0.5 * (0.7 * 255 + 0.3 * a[i]) + 0.5 * b[i]);
   const png = await sharp(out, { raw: { width: W, height: H, channels: 3 } }).png().toBuffer();
   return { png, width: W, height: H, fit, layers: { a: layerA, b: layerB } };
 }

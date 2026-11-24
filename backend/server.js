@@ -66,6 +66,7 @@ function cleanItem(id, body) {
   }
   if (typeof body.label === 'string' && body.label) it.label = body.label.slice(0, 80);
   if (body.example) it.example = true;
+  if (body.refOff) it.refOff = true;
   const strokes = cleanStrokes(body.strokes);
   if (strokes) it.strokes = strokes;
   return it;
@@ -206,7 +207,7 @@ api.post('/links/:id/overlay', async (req, res) => {
   let png, width, height, fit, layers;
   try { ({ png, width, height, fit, layers } = await composeOverlay(A, B, drawA, drawB, { align, fit: keepFit })); }
   catch (err) { console.error('[overlay]', err); return res.status(500).json({ error: '겹쳐 보기 이미지를 만들지 못했습니다' }); }
-  const label = ai ? '겹쳐 보기 · AI 선화 각 50%' : '겹쳐 보기 · 원본 각 50%';
+  const label = ai ? '겹쳐 보기 · AI 선화 (사진 30% · 크로키 50%)' : '겹쳐 보기 · 원본 (사진 30% · 크로키 50%)';
 
   const saveImage = async (buf, extra) => {
     const id = crypto.randomUUID().replace(/-/g, '');
