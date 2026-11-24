@@ -1,13 +1,23 @@
 // 무한 사진 캔버스 — backend
 // Serves the frontend, stores the board (items, arrows, camera) and uploaded images,
 // and builds the 50/50 overlay images.
-import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
-import sharp from 'sharp';
-import { board, persist, flushNow, imageUrl, collectGarbage, UPLOAD_DIR } from './store.js';
-import { composeOverlay, hasContent } from './compose.js';
+
+// Read KEY=value lines from .env in the project folder (values already in the environment win).
+try {
+  for (const line of fs.readFileSync(path.resolve(import.meta.dirname, '..', '.env'), 'utf8').split(/\r?\n/)) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
+    if (m && !(m[1] in process.env)) process.env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2');
+  }
+} catch {}
+
+const { default: express } = await import('express');
+const { default: crypto } = await import('node:crypto');
+const { default: sharp } = await import('sharp');
+const { board, persist, flushNow, imageUrl, collectGarbage, UPLOAD_DIR } = await import('./store.js');
+const { composeOverlay, hasContent } = await import('./compose.js');
+const { aiEnabled, aiConfig, processedImage } = await import('./ai.js');
 
 const PORT = Number(process.env.PORT) || 3000;
 const FRONTEND_DIR = path.resolve(import.meta.dirname, '..', 'frontend');
@@ -158,9 +168,27 @@ api.post('/links/:id/overlay', async (req, res) => {
   const A = board.items[link.from], B = board.items[link.to];
   if (!hasContent(A) || !hasContent(B)) return res.status(422).json({ error: '겹쳐 보려면 화살표 양쪽에 사진이나 그림이 있어야 합니다' });
 
+  // With an API key: the arrow's start goes through prompt 1 (photo → line art) and its end
+  // through prompt 2 (croquis photo → pencil lines) before they are mixed. Drawings made on
+  // the board (pen strokes) are already lines and are used as they are.
+  const ai = aiEnabled();
+  let drawA = A.image, drawB = B.image;
+  if (ai) {
+    try {
+      [drawA, drawB] = await Promise.all([
+        A.image ? processedImage(A.image, 'lineart') : null,
+        B.image ? processedImage(B.image, 'pencil') : null,
+      ]);
+    } catch (err) {
+      console.error('[ai]', err.message);
+      return res.status(502).json({ error: err.message });
+    }
+  }
+
   let png, width, height;
-  try { ({ png, width, height } = await composeOverlay(A, B)); }
+  try { ({ png, width, height } = await composeOverlay(A, B, drawA, drawB)); }
   catch (err) { console.error('[overlay]', err); return res.status(500).json({ error: '겹쳐 보기 이미지를 만들지 못했습니다' }); }
+  const label = ai ? '겹쳐 보기 · AI 선화 각 50%' : '겹쳐 보기 · 원본 각 50%';
 
   const imgId = crypto.randomUUID().replace(/-/g, '');
   const file = `${imgId}.png`;
@@ -171,20 +199,25 @@ api.post('/links/:id/overlay', async (req, res) => {
   let created = false;
   if (ov) {
     const cx = ov.x + ov.w / 2, cy = ov.y + ov.h / 2;
-    Object.assign(ov, { w: B.w, h: B.h, x: cx - B.w / 2, y: cy - B.h / 2, image: imgId });
+    Object.assign(ov, { w: B.w, h: B.h, x: cx - B.w / 2, y: cy - B.h / 2, image: imgId, label });
     delete ov.cover; delete ov.pos; delete ov.zoom; // red markup (strokes) is kept
   } else {
     const side = OPP[facingSide(B, A)], [nx, ny] = NORM[side];
     const order = Math.max(0, ...Object.values(board.items).map(i => i.order)) + 1;
     const id = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
-    ov = { id, x: B.x + nx * (B.w + GAP), y: B.y + ny * (B.h + GAP), w: B.w, h: B.h, order, image: imgId, label: '겹쳐 보기 · 각 50%' };
+    ov = { id, x: B.x + nx * (B.w + GAP), y: B.y + ny * (B.h + GAP), w: B.w, h: B.h, order, image: imgId, label };
     board.items[id] = ov;
     link.overlay = id;
     created = true;
   }
   collectGarbage();
   persist();
-  res.status(created ? 201 : 200).json({ item: withUrl(ov), link, created });
+  res.status(created ? 201 : 200).json({ item: withUrl(ov), link, created, ai });
+});
+
+// Lets the page say up front whether arrows will use AI line extraction.
+api.get('/config', (req, res) => {
+  res.json({ ai: aiEnabled(), imageModel: aiConfig().model });
 });
 
 api.use((err, req, res, next) => {
@@ -200,6 +233,9 @@ app.use(express.static(FRONTEND_DIR, { index: 'index.html' }));
 
 app.listen(PORT, () => {
   console.log(`무한 사진 캔버스: http://localhost:${PORT}`);
+  console.log(aiEnabled()
+    ? `AI 선화 추출 켜짐 (이미지 모델: ${aiConfig().model})`
+    : 'AI 선화 추출 꺼짐: .env 에 OPENAI_API_KEY 를 넣으면 화살표 클릭 시 선화를 추출해 겹칩니다');
 });
 
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { flushNow(); process.exit(0); });

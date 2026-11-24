@@ -55,6 +55,8 @@ export const imagePath = id => path.join(UPLOAD_DIR, board.images[id].file);
 const GRACE_MS = 60 * 60 * 1000;
 export function collectGarbage() {
   const used = new Set(Object.values(board.items).map(it => it.image).filter(Boolean));
+  // AI line versions live as long as the photo they were made from
+  for (const id of [...used]) for (const aiId of Object.values(board.images[id]?.ai || {})) used.add(aiId);
   const now = Date.now();
   for (const [id, img] of Object.entries(board.images)) {
     if (used.has(id)) { img.attached = true; continue; }

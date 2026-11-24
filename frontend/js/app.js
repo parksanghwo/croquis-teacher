@@ -158,6 +158,7 @@ function renderLinks() {
     let g = linksSvg.querySelector(`g[data-id="${l.id}"]`);
     if (!g) { g = document.createElementNS(SVGNS, 'g'); g.dataset.id = l.id; linksSvg.appendChild(g); }
     g.classList.toggle('sel', selLink === l.id);
+    g.classList.toggle('busy', !!l.busy);
     const sb = facingSide(B, A);
     drawLink(g, sidePoint(A, l.side), l.side, sidePoint(B, sb), sb);
     keep.add(l.id);
@@ -316,28 +317,32 @@ async function makeOverlay(l, silent) {
     toast('겹쳐 보려면 화살표 양쪽에 사진이나 그림이 있어야 합니다'); return;
   }
   overlayBusy = true;
+  l.busy = true; renderLinks();
+  if (!silent && serverConfig.ai) toast('AI로 선화를 추출하는 중입니다. 사진마다 처음 한 번은 1분쯤 걸릴 수 있습니다', 0);
   try {
     await flushSave(); // the server composes from what it has stored, so send pending edits first
     const res = await api.overlay(l.id);
     const r = res.item;
     let it = byId(r.id);
     if (it) {
-      Object.assign(it, { x: r.x, y: r.y, w: r.w, h: r.h, image: r.image, url: r.url });
+      Object.assign(it, { x: r.x, y: r.y, w: r.w, h: r.h, image: r.image, url: r.url, label: r.label });
       delete it.cover; delete it.pos; delete it.zoom;
       fillContent(it, it.el); layout(it);
-      if (!silent) toast('겹쳐 보기를 새로 고쳤습니다');
+      const tag = it.el.querySelector('.tag'); if (tag) tag.textContent = r.label;
+      if (!silent) toast(res.ai ? 'AI 선화로 겹쳐 보기를 새로 고쳤습니다' : '겹쳐 보기를 새로 고쳤습니다');
     } else {
       it = { ...r };
       orderCounter = Math.max(orderCounter, it.order);
       items.push(it); makeEl(it);
-      toast('두 이미지를 50%씩 겹쳐 옆에 놓았습니다');
+      toast(res.ai ? 'AI로 추출한 두 선화를 50%씩 겹쳐 옆에 놓았습니다'
+                   : '원본을 50%씩 겹쳤습니다. 서버에 OpenAI API 키가 없어 선화 추출은 건너뛰었습니다', res.ai ? 2600 : 5000);
     }
     l.overlay = res.link.overlay;
     markSent(it, l); // the server already has this state
-    renderLinks();
   } catch (err) {
-    if (!silent) toast(err.message);
+    if (!silent) toast(err.message, 6000);
   } finally {
+    l.busy = false; renderLinks();
     overlayBusy = false;
     const next = links.find(x => x.pending);
     if (next) { next.pending = false; makeOverlay(next, true); }
@@ -875,10 +880,16 @@ helpToggle.onclick = () => setHelp(!help.classList.contains('collapsed'));
 try { if (localStorage.getItem('ic-help') === '1') setHelp(true); else if (innerWidth < 560) setHelp(true); } catch { if (innerWidth < 560) setHelp(true); }
 
 let toastTimer;
-function toast(msg) {
+/** Show a message; ms = 0 keeps it up until the next message. */
+function toast(msg, ms = 2200) {
   toastEl.textContent = msg; toastEl.classList.add('show');
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2200);
+  clearTimeout(toastTimer);
+  if (ms) toastTimer = setTimeout(() => toastEl.classList.remove('show'), ms);
 }
+
+/* what the server can do (AI line extraction on or off) */
+const serverConfig = { ai: false, imageModel: '' };
+api.config().then(c => Object.assign(serverConfig, c)).catch(() => {});
 
 /* ---------- persistence: sync changes to the backend ---------- */
 const saveEl = document.getElementById('saveState');

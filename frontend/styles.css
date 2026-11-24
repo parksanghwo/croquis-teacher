@@ -153,3 +153,9 @@ body{background:var(--bg);color:var(--ink);font-family:var(--f-ui);overscroll-be
 .save-state[data-state="offline"] i{background:var(--danger)}
 .save-state[data-state="error"]{color:var(--danger)}
 .save-state[data-state="error"] i{background:var(--danger)}
+
+/* arrow while the server extracts line art for its overlay */
+#links g.busy .line{stroke:var(--accent);stroke-dasharray:8 6;animation:linkbusy .6s linear infinite}
+#links g.busy .head{fill:var(--accent)}
+@keyframes linkbusy{to{stroke-dashoffset:-14}}
+@media (prefers-reduced-motion:reduce){#links g.busy .line{animation:none}}

@@ -33,12 +33,16 @@ function strokesSvg(strokes, W, H) {
   return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">${parts.join('')}</svg>`);
 }
 
-/** Render one item to raw RGB pixels (W×H, white background). */
-async function renderItem(item, W, H) {
+/**
+ * Render one item to raw RGB pixels (W×H, white background).
+ * `drawId` swaps in another image of the same canvas size (the AI line version),
+ * keeping the item's crop, zoom and position.
+ */
+async function renderItem(item, W, H, drawId = item.image) {
   const layers = [];
-  if (item.image && board.images[item.image]) {
+  if (item.image && board.images[item.image] && board.images[drawId]) {
     const meta = board.images[item.image];
-    let input = sharp(imagePath(item.image)).rotate(); // apply EXIF orientation like the browser does
+    let input = sharp(imagePath(drawId)).rotate(); // apply EXIF orientation like the browser does
     if (item.cover) {
       const g = cropGeom(item, meta.width, meta.height, W, H);
       const rw = Math.max(W, Math.round(g.w)), rh = Math.max(H, Math.round(g.h));
@@ -68,11 +72,11 @@ export function hasContent(item) {
  * Mix source A and target B at 50% each, at B's aspect ratio.
  * Returns a PNG buffer plus its pixel size.
  */
-export async function composeOverlay(A, B) {
+export async function composeOverlay(A, B, drawA, drawB) {
   const long = 1600, r = B.h / B.w;
   const W = r <= 1 ? long : Math.round(long / r);
   const H = Math.round(W * r);
-  const [a, b] = await Promise.all([renderItem(A, W, H), renderItem(B, W, H)]);
+  const [a, b] = await Promise.all([renderItem(A, W, H, drawA || A.image), renderItem(B, W, H, drawB || B.image)]);
   const out = Buffer.allocUnsafe(a.length);
   for (let i = 0; i < a.length; i++) out[i] = (a[i] + b[i] + 1) >> 1;
   const png = await sharp(out, { raw: { width: W, height: H, channels: 3 } }).png().toBuffer();

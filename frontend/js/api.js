@@ -22,6 +22,8 @@ async function request(method, path, body, headers = {}) {
 
 export const api = {
   board: () => request('GET', '/board'),
+  /** {ai, imageModel}: whether arrows extract line art with the image model */
+  config: () => request('GET', '/config'),
   camera: cam => request('PUT', '/camera', { x: cam.x, y: cam.y, z: cam.z }),
   /** Upload an image blob → {id, url, width, height} */
   uploadImage: blob => request('POST', '/images', blob, { 'Content-Type': blob.type && blob.type.startsWith('image/') ? blob.type : 'image/png' }),
