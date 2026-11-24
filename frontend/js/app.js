@@ -652,14 +652,17 @@ vp.addEventListener('wheel', e => {
     // Alt + wheel over a cropped photo: zoom the photo inside its crop
     const it = itemAt(e.clientX, e.clientY);
     const wdy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+    // fine steps: one mouse-wheel notch changes the size by about 3%; trackpads go smoother still
+    const fine = Math.exp(-Math.max(-60, Math.min(60, wdy)) * 0.0005);
     if (it && it.layers) {
       // Alt + wheel on an AI overlay: size the croquis layer around the pointer
       const r = it.el.getBoundingClientRect();
       const px = (e.clientX - r.left) / r.width, py = (e.clientY - r.top) / r.height;
       const f0 = it.fit || { s: 1, dx: 0, dy: 0 };
-      const s = Math.min(10, Math.max(0.1, f0.s * Math.exp(-wdy * 0.002))), k = s / f0.s;
+      const s = Math.min(10, Math.max(0.1, f0.s * fine)), k = s / f0.s;
       it.fit = { s, dx: px - (px - f0.dx) * k, dy: py - (py - f0.dy) * k, manual: true };
       layout(it);
+      toast(`크로키 선화 크기 ${Math.round(s * 100)}%`, 900);
       clearTimeout(cropWheelTimer);
       cropWheelTimer = setTimeout(scheduleSave, 250);
       return;
@@ -669,7 +672,8 @@ vp.addEventListener('wheel', e => {
       it.cover = true; // a photo at its own ratio crops to itself, so this changes nothing until zoomed
       const dy = wdy;
       // down to 20%: the croquis can be made smaller than its frame, not only larger
-      it.zoom = Math.min(8, Math.max(0.2, (it.zoom || 1) * Math.exp(-dy * 0.002)));
+      it.zoom = Math.min(8, Math.max(0.2, (it.zoom || 1) * fine));
+      toast(`크로키 크기 ${Math.round(it.zoom * 100)}%`, 900);
       layout(it);
       clearTimeout(cropWheelTimer);
       cropWheelTimer = setTimeout(() => { refreshOverlaysFor(it.id); scheduleSave(); }, 250);
