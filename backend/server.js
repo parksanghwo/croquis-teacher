@@ -201,7 +201,7 @@ api.post('/links/:id/overlay', async (req, res) => {
   const prev = link.overlay && board.items[link.overlay];
   // a fit the person set by hand (Alt+drag / Alt+scroll) survives automatic rebuilds;
   // clicking the arrow again ({ refit: true }) goes back to the automatic fit
-  const keepFit = align && !req.body?.refit && prev?.fit?.manual ? prev.fit : null;
+  const keepFit = !req.body?.refit && prev?.fit?.manual ? prev.fit : null;
 
   let png, width, height, fit, layers;
   try { ({ png, width, height, fit, layers } = await composeOverlay(A, B, drawA, drawB, { align, fit: keepFit })); }
@@ -216,8 +216,8 @@ api.post('/links/:id/overlay', async (req, res) => {
     return id;
   };
   const imgId = await saveImage(png);
-  const layerIds = layers ? { a: await saveImage(layers.a, { layer: 'a' }), b: await saveImage(layers.b, { layer: 'b' }) } : null;
-  const fitOut = fit ? { s: fit.s, dx: fit.dx, dy: fit.dy, ...(keepFit ? { manual: true } : {}) } : null;
+  const layerIds = { a: await saveImage(layers.a, { layer: 'a' }), b: await saveImage(layers.b, { layer: 'b' }) };
+  const fitOut = { s: fit.s, dx: fit.dx, dy: fit.dy, ...(keepFit ? { manual: true } : {}) };
 
   let ov = link.overlay && board.items[link.overlay];
   let created = false;
@@ -234,10 +234,10 @@ api.post('/links/:id/overlay', async (req, res) => {
     link.overlay = id;
     created = true;
   }
-  if (layerIds) { ov.layers = layerIds; ov.fit = fitOut; }
+  ov.layers = layerIds; ov.fit = fitOut;
   collectGarbage();
   persist();
-  res.status(created ? 201 : 200).json({ item: withUrl(ov), link, created, ai, alignment: fitOut });
+  res.status(created ? 201 : 200).json({ item: withUrl(ov), link, created, ai, alignment: align && !keepFit ? fitOut : null });
 });
 
 // Lets the page say up front whether arrows will use AI line extraction.

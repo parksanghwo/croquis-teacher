@@ -131,9 +131,9 @@ const applyFit = (layer, fit, W, H) => place(layer, fit.dx * W, fit.dy * H, W * 
 
 /**
  * Overlay of source A and target B at 50% each, at B's aspect ratio.
- * With `align`, B is the whole drawing placed by `fit` (given, or found automatically so
- * its figure overlaps A's). Returns the flattened PNG plus, when aligned, both transparent
- * layers and the fit, so the page can keep adjusting B live.
+ * B is placed by `fit`: the one given (set by hand), else with `align` the whole drawing
+ * fitted automatically onto A's figure, else as shown on the board. Returns the flattened
+ * PNG plus both transparent layers and the fit, so the page can keep adjusting B live.
  */
 export async function composeOverlay(A, B, drawA, drawB, { align = false, fit = null } = {}) {
   const long = 1600, r = B.h / B.w;
@@ -145,19 +145,18 @@ export async function composeOverlay(A, B, drawA, drawB, { align = false, fit = 
     renderLayer(B, W, H, drawB || B.image, { whole: wholeB }),
   ]);
   const a = await onWhite(layerA);
-  let b, usedFit = null;
-  if (align) {
-    if (!fit) {
+  // B always stays a separate layer placed by a fit, so the page can move and size only
+  // the croquis. Without auto-fit it starts where the board shows it (scale 1, no offset).
+  if (!fit) {
+    fit = { s: 1, dx: 0, dy: 0 };
+    if (align) {
       const boxA = inkBox(a, W, H), boxB = inkBox(await onWhite(layerB), W, H);
-      fit = boxA && boxB ? fitFor(boxA, boxB, W, H) : { s: 1, dx: 0, dy: 0 };
+      if (boxA && boxB) fit = fitFor(boxA, boxB, W, H);
     }
-    usedFit = fit;
-    b = await onWhite(await applyFit(layerB, fit, W, H));
-  } else {
-    b = await onWhite(layerB);
   }
+  const b = await onWhite(await applyFit(layerB, fit, W, H));
   const out = Buffer.allocUnsafe(a.length);
   for (let i = 0; i < a.length; i++) out[i] = (a[i] + b[i] + 1) >> 1;
   const png = await sharp(out, { raw: { width: W, height: H, channels: 3 } }).png().toBuffer();
-  return { png, width: W, height: H, fit: usedFit, layers: align ? { a: layerA, b: layerB } : null };
+  return { png, width: W, height: H, fit, layers: { a: layerA, b: layerB } };
 }

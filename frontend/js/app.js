@@ -476,6 +476,10 @@ vp.addEventListener('pointerdown', e => {
       drag = { it: cit, sx: e.clientX, sy: e.clientY, f0: { ...(cit.fit || { s: 1, dx: 0, dy: 0 }) } };
       return;
     }
+    if (e.altKey && cit && cit.image && isOverlay(cit)) {
+      // an older overlay saved as one flat image: rebuild it as layers instead of moving it whole
+      upgradeOverlay(cit); mode = null; return;
+    }
     if (e.altKey && cit && cit.image) {
       cit.cover = true;
       // Alt + drag: slide the photo inside its crop
@@ -647,6 +651,7 @@ vp.addEventListener('wheel', e => {
       cropWheelTimer = setTimeout(scheduleSave, 250);
       return;
     }
+    if (it && it.image && isOverlay(it)) { upgradeOverlay(it); return; } // never zoom the overlay as a whole
     if (it && it.image) {
       it.cover = true; // a photo at its own ratio crops to itself, so this changes nothing until zoomed
       const dy = wdy;
@@ -811,6 +816,13 @@ const RED = '#e0262b';
 let dColor = '#111';
 const paperImg = document.getElementById('paperImg');
 const isOverlay = it => links.some(l => l.overlay === it.id);
+/** Rebuild an overlay saved before it had separate layers, so only its croquis layer moves. */
+function upgradeOverlay(it) {
+  const l = links.find(x => x.overlay === it.id);
+  if (!l || it.layers) return;
+  toast('겹쳐 보기를 크로키 층만 움직일 수 있게 다시 만드는 중입니다');
+  makeOverlay(l, true);
+}
 /** The layered overlay as one picture (for the red-pen paper): white, then both layers at 50%. */
 async function layeredPreview(it) {
   const load = src => new Promise((ok, no) => { const im = new Image(); im.onload = () => ok(im); im.onerror = no; im.src = src; });
@@ -1106,6 +1118,8 @@ async function seedExamples() {
     fitAll();
   }
   ready = true;
+  // overlays saved as one flat image (older version) are rebuilt as two layers
+  for (const l of links) { const ov = l.overlay && byId(l.overlay); if (ov && ov.image && !ov.layers) makeOverlay(l, true); }
   scheduleSave();
 })();
 window.addEventListener('resize', () => applyCam());
