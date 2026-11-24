@@ -159,3 +159,8 @@ body{background:var(--bg);color:var(--ink);font-family:var(--f-ui);overscroll-be
 #links g.busy .head{fill:var(--accent)}
 @keyframes linkbusy{to{stroke-dashoffset:-14}}
 @media (prefers-reduced-motion:reduce){#links g.busy .line{animation:none}}
+
+/* AI overlay as live layers: white paper, each drawing at 50% */
+.clip.layered{background:#fff}
+.clip.layered img{opacity:.5}
+.clip.layered canvas{opacity:1}

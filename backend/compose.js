@@ -33,48 +33,59 @@ function strokesSvg(strokes, W, H) {
   return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">${parts.join('')}</svg>`);
 }
 
+const CLEAR = { r: 255, g: 255, b: 255, alpha: 0 };
+
 /**
- * Render one item to raw RGB pixels (W×H, white background).
- * `drawId` swaps in another image of the same canvas size (the AI line version),
- * keeping the item's crop, zoom and position.
+ * Place a picture on a transparent W×H canvas: scaled to gw×gh with its top-left at (gx, gy).
+ * Any part outside the canvas is cut off; offsets may be negative.
  */
-async function renderItem(item, W, H, drawId = item.image, { whole = false } = {}) {
+async function place(input, gx, gy, gw, gh, W, H) {
+  gw = Math.max(1, Math.round(gw)); gh = Math.max(1, Math.round(gh));
+  const pad = Math.max(W, H, gw, gh) * 2;
+  // two passes: inside one sharp pipeline, extract runs before extend
+  const padded = await sharp(input).ensureAlpha()
+    .resize(gw, gh, { fit: 'fill' })
+    .extend({ top: pad, bottom: pad, left: pad, right: pad, background: CLEAR })
+    .raw().toBuffer({ resolveWithObject: true });
+  const { width: PW, height: PH } = padded.info;
+  const left = Math.min(PW - W, Math.max(0, pad - Math.round(gx)));
+  const top = Math.min(PH - H, Math.max(0, pad - Math.round(gy)));
+  return sharp(padded.data, { raw: { width: PW, height: PH, channels: 4 } })
+    .extract({ left, top, width: W, height: H }).png().toBuffer();
+}
+
+/**
+ * One item as a transparent W×H PNG layer: its photo (crop, zoom and position as on the
+ * board) plus its pen strokes. `drawId` swaps in another image of the same canvas size
+ * (the AI line version). `whole` shows the entire picture, uncropped and undistorted.
+ */
+export async function renderLayer(item, W, H, drawId = item.image, { whole = false } = {}) {
   const layers = [];
   if (item.image && board.images[item.image] && board.images[drawId]) {
     const meta = board.images[item.image];
-    let input = sharp(imagePath(drawId)).rotate(); // apply EXIF orientation like the browser does
+    const src = await sharp(imagePath(drawId)).rotate().png().toBuffer(); // EXIF orientation, like the browser
+    let g;
     if (whole) {
-      // the entire image, uncropped and undistorted, centred on white
-      input = input.resize(W, H, { fit: 'contain', background: { ...WHITE, alpha: 0 } });
+      const s = Math.min(W / meta.width, H / meta.height), w = meta.width * s, h = meta.height * s;
+      g = { x: (W - w) / 2, y: (H - h) / 2, w, h };
     } else if (item.cover) {
-      const g = cropGeom(item, meta.width, meta.height, W, H);
-      const rw = Math.max(W, Math.round(g.w)), rh = Math.max(H, Math.round(g.h));
-      const left = Math.min(rw - W, Math.max(0, Math.round(-g.x)));
-      const top = Math.min(rh - H, Math.max(0, Math.round(-g.y)));
-      input = input.resize(rw, rh, { fit: 'fill' }).extract({ left, top, width: W, height: H });
+      g = cropGeom(item, meta.width, meta.height, W, H);
     } else {
-      input = input.resize(W, H, { fit: 'fill' });
+      g = { x: 0, y: 0, w: W, h: H };
     }
-    layers.push({ input: await input.png().toBuffer() });
+    layers.push({ input: await place(src, g.x, g.y, g.w, g.h, W, H) });
   }
   if (item.strokes && item.strokes.length) layers.push({ input: strokesSvg(item.strokes, W, H) });
-
-  return sharp({ create: { width: W, height: H, channels: 3, background: WHITE } })
-    .composite(layers)
-    .flatten({ background: WHITE })
-    .removeAlpha()
-    .raw()
-    .toBuffer();
+  return sharp({ create: { width: W, height: H, channels: 4, background: CLEAR } }).composite(layers).png().toBuffer();
 }
+
+/** A layer on white, as raw RGB pixels. */
+const onWhite = (png) => sharp(png).flatten({ background: WHITE }).removeAlpha().raw().toBuffer();
 
 export function hasContent(item) {
   return !!(item && ((item.image && board.images[item.image]) || (item.strokes && item.strokes.length)));
 }
 
-/**
- * Mix source A and target B at 50% each, at B's aspect ratio.
- * Returns a PNG buffer plus its pixel size.
- */
 /**
  * Where the drawn figure is: the box holding the middle 98% of the dark (line) pixels
  * along each axis, so a few stray marks at the edges don't stretch it.
@@ -99,62 +110,54 @@ export function inkBox(raw, W, H, { dark = 60, trim = 0.01 } = {}) {
     return [lo, hi + 1];
   };
   const [x0, x1] = span(cols), [y0, y1] = span(rows);
-  // too little ink to trust (an almost empty drawing)
-  if (x1 - x0 < W * 0.05 || y1 - y0 < H * 0.05) return null;
+  if (x1 - x0 < W * 0.05 || y1 - y0 < H * 0.05) return null; // too little ink to trust
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
 
 /**
- * Move and scale drawing B so its figure lands on figure A. One scale factor for both
- * axes (proportions never change): the geometric mean of the width and height ratios,
- * kept between 0.5× and 2×. Box centers are matched.
+ * The fit that lands figure B on figure A: one scale for both axes (proportions never
+ * change), the geometric mean of the width and height ratios kept within 0.5–2×, and the
+ * offset that matches the box centres. dx, dy are fractions of the canvas size.
+ * Layer B is drawn scaled by s from the top-left corner, then moved by (dx·W, dy·H).
  */
-export async function alignTo(rawB, boxA, boxB, W, H) {
+export function fitFor(boxA, boxB, W, H) {
   const s = Math.min(2, Math.max(0.5, Math.sqrt((boxA.w / boxB.w) * (boxA.h / boxB.h))));
-  const ox = Math.round(boxA.x + boxA.w / 2 - (boxB.x + boxB.w / 2) * s);
-  const oy = Math.round(boxA.y + boxA.h / 2 - (boxB.y + boxB.h / 2) * s);
-  const sw = Math.max(1, Math.round(W * s)), sh = Math.max(1, Math.round(H * s));
-  const pad = Math.max(W, H) * 2;
-  // two passes: sharp runs extract before extend inside a single pipeline
-  const padded = await sharp(rawB, { raw: { width: W, height: H, channels: 3 } })
-    .resize(sw, sh, { fit: 'fill' })
-    .extend({ top: pad, bottom: pad, left: pad, right: pad, background: WHITE })
-    .raw().toBuffer({ resolveWithObject: true });
-  const left = Math.min(padded.info.width - W, Math.max(0, pad - ox));
-  const top = Math.min(padded.info.height - H, Math.max(0, pad - oy));
-  const raw = await sharp(padded.data, { raw: { width: padded.info.width, height: padded.info.height, channels: 3 } })
-    .extract({ left, top, width: W, height: H })
-    .raw().toBuffer();
-  return { raw, scale: s, dx: ox, dy: oy };
+  const ox = boxA.x + boxA.w / 2 - (boxB.x + boxB.w / 2) * s;
+  const oy = boxA.y + boxA.h / 2 - (boxB.y + boxB.h / 2) * s;
+  return { s: Math.round(s * 1e4) / 1e4, dx: Math.round((ox / W) * 1e4) / 1e4, dy: Math.round((oy / H) * 1e4) / 1e4 };
 }
 
+const applyFit = (layer, fit, W, H) => place(layer, fit.dx * W, fit.dy * H, W * fit.s, H * fit.s, W, H);
+
 /**
- * Mix source A and target B at 50% each, at B's aspect ratio.
- * With `align`, drawing B is first scaled (uniformly) and moved so its figure overlaps A's.
+ * Overlay of source A and target B at 50% each, at B's aspect ratio.
+ * With `align`, B is the whole drawing placed by `fit` (given, or found automatically so
+ * its figure overlaps A's). Returns the flattened PNG plus, when aligned, both transparent
+ * layers and the fit, so the page can keep adjusting B live.
  */
-export async function composeOverlay(A, B, drawA, drawB, { align = false } = {}) {
+export async function composeOverlay(A, B, drawA, drawB, { align = false, fit = null } = {}) {
   const long = 1600, r = B.h / B.w;
   const W = r <= 1 ? long : Math.round(long / r);
   const H = Math.round(W * r);
-  // When fitting automatically, B is taken whole (not the crop shown on the board): the fit
-  // decides its size and position, and nothing of the drawing gets cut off first.
-  const [a, b0] = await Promise.all([
-    renderItem(A, W, H, drawA || A.image),
-    renderItem(B, W, H, drawB || B.image, { whole: align && !!B.image }),
+  const wholeB = align && !!B.image;
+  const [layerA, layerB] = await Promise.all([
+    renderLayer(A, W, H, drawA || A.image),
+    renderLayer(B, W, H, drawB || B.image, { whole: wholeB }),
   ]);
-  let b = b0, alignment = null;
+  const a = await onWhite(layerA);
+  let b, usedFit = null;
   if (align) {
-    const boxA = inkBox(a, W, H), boxB = inkBox(b0, W, H);
-    if (boxA && boxB) {
-      const res = await alignTo(b0, boxA, boxB, W, H);
-      b = res.raw;
-      alignment = { scale: Math.round(res.scale * 1000) / 1000, dx: res.dx / W, dy: res.dy / H };
-    } else if (B.image) {
-      b = await renderItem(B, W, H, drawB || B.image); // no figure found: fall back to the board's crop
+    if (!fit) {
+      const boxA = inkBox(a, W, H), boxB = inkBox(await onWhite(layerB), W, H);
+      fit = boxA && boxB ? fitFor(boxA, boxB, W, H) : { s: 1, dx: 0, dy: 0 };
     }
+    usedFit = fit;
+    b = await onWhite(await applyFit(layerB, fit, W, H));
+  } else {
+    b = await onWhite(layerB);
   }
   const out = Buffer.allocUnsafe(a.length);
   for (let i = 0; i < a.length; i++) out[i] = (a[i] + b[i] + 1) >> 1;
   const png = await sharp(out, { raw: { width: W, height: H, channels: 3 } }).png().toBuffer();
-  return { png, width: W, height: H, alignment };
+  return { png, width: W, height: H, fit: usedFit, layers: align ? { a: layerA, b: layerB } : null };
 }

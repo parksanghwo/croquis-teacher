@@ -32,5 +32,5 @@ export const api = {
   putLink: link => request('PUT', `/links/${link.id}`, link),
   deleteLink: id => request('DELETE', `/links/${id}`),
   /** Build or rebuild the 50/50 overlay for an arrow → {item, link, created} */
-  overlay: linkId => request('POST', `/links/${linkId}/overlay`),
+  overlay: (linkId, { refit = false } = {}) => request('POST', `/links/${linkId}/overlay`, { refit }),
 };

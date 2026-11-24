@@ -80,7 +80,23 @@ function makeEl(it) {
 function fillContent(it, el) {
   const old = el.querySelector('.clip, .frame-box'); if (old) old.remove();
   let node;
-  if (it.image) {
+  if (it.layers && it.layerUrls) {
+    // AI overlay kept as two layers on white, each at 50%: reference line art (a) fixed,
+    // croquis (b) placed by it.fit so Alt+drag / Alt+scroll can move and size it live
+    node = document.createElement('div'); node.className = 'clip layered';
+    for (const k of ['a', 'b']) {
+      const img = document.createElement('img');
+      img.className = 'layer-' + k; img.src = it.layerUrls[k]; img.alt = ''; img.draggable = false;
+      node.appendChild(img);
+    }
+    if (it.strokes && it.strokes.length) {
+      const c = document.createElement('canvas');
+      const long = 1600, r = it.h / it.w;
+      c.width = r <= 1 ? long : Math.round(long / r); c.height = Math.round(c.width * r);
+      renderStrokes(c.getContext('2d'), it.strokes, c.width);
+      node.appendChild(c);
+    }
+  } else if (it.image) {
     node = document.createElement('div'); node.className = 'clip';
     const img = document.createElement('img'); img.src = it.url; img.alt = ''; img.draggable = false;
     img.onload = () => { if (it.el) layout(it); };
@@ -111,7 +127,12 @@ function layout(it) {
   const s = it.el.style;
   s.left = it.x + 'px'; s.top = it.y + 'px'; s.width = it.w + 'px'; s.height = it.h + 'px'; s.zIndex = it.order;
   it.el.classList.toggle('cover', !!it.cover);
-  const img = it.el.querySelector('img');
+  const lb = it.layers && it.el.querySelector('img.layer-b');
+  const img = !it.layers && it.el.querySelector('img');
+  if (lb) {
+    const f = it.fit || { s: 1, dx: 0, dy: 0 };
+    Object.assign(lb.style, { left: f.dx * 100 + '%', top: f.dy * 100 + '%', width: f.s * 100 + '%', height: f.s * 100 + '%' });
+  }
   if (img) {
     const g = it.cover ? cropGeom(it, img) : null;
     if (g) Object.assign(img.style, { left: g.x + 'px', top: g.y + 'px', width: g.w + 'px', height: g.h + 'px' });
@@ -307,7 +328,7 @@ function connect(src, side, tgt) {
 /** " 도착 그림을 112%로 키우고 위치를 맞췄습니다" — how the server fitted the arrow's end onto its start */
 function fitNote(a) {
   if (!a) return '';
-  const pct = Math.round(a.scale * 100);
+  const pct = Math.round(a.s * 100);
   const size = pct === 100 ? '크기는 그대로 두고' : `도착 그림을 ${pct}%로 ${pct > 100 ? '키우고' : '줄이고'}`;
   return ` ${size} 위치를 맞췄습니다`;
 }
@@ -328,12 +349,14 @@ async function makeOverlay(l, silent) {
   if (!silent && serverConfig.ai) toast('AI로 선화를 추출하는 중입니다. 사진마다 처음 한 번은 1분쯤 걸릴 수 있습니다', 0);
   try {
     await flushSave(); // the server composes from what it has stored, so send pending edits first
-    const res = await api.overlay(l.id);
+    // clicking the arrow re-fits automatically; quiet rebuilds keep a hand-set fit
+    const res = await api.overlay(l.id, { refit: !silent });
     const r = res.item;
     let it = byId(r.id);
     if (it) {
       Object.assign(it, { x: r.x, y: r.y, w: r.w, h: r.h, image: r.image, url: r.url, label: r.label });
-      delete it.cover; delete it.pos; delete it.zoom;
+      delete it.cover; delete it.pos; delete it.zoom; delete it.layers; delete it.layerUrls; delete it.fit;
+      if (r.layers) Object.assign(it, { layers: r.layers, layerUrls: r.layerUrls, fit: r.fit });
       fillContent(it, it.el); layout(it);
       const tag = it.el.querySelector('.tag'); if (tag) tag.textContent = r.label;
       if (!silent) toast(res.ai ? `AI 선화로 겹쳐 보기를 새로 고쳤습니다.${fitNote(res.alignment)}` : '겹쳐 보기를 새로 고쳤습니다', 3200);
@@ -446,6 +469,13 @@ vp.addEventListener('pointerdown', e => {
       return;
     }
     const cit = byId(id);
+    if (e.altKey && cit && cit.layers) {
+      // Alt + drag on an AI overlay: move the croquis layer over the reference line art
+      select([id]);
+      mode = 'fit';
+      drag = { it: cit, sx: e.clientX, sy: e.clientY, f0: { ...(cit.fit || { s: 1, dx: 0, dy: 0 }) } };
+      return;
+    }
     if (e.altKey && cit && cit.image) {
       cit.cover = true;
       // Alt + drag: slide the photo inside its crop
@@ -506,11 +536,19 @@ vp.addEventListener('pointermove', e => {
   } else if (mode === 'crop') {
     const clamp = v => Math.max(0, Math.min(100, v));
     const dx = (e.clientX - drag.sx) / cam.z, dy = (e.clientY - drag.sy) / cam.z;
+    // ox/oy < 0 when the photo is smaller than its frame (Alt+scroll below 100%); the same
+    // formula then slides it around inside the frame
     drag.it.pos = [
-      drag.ox > 0.5 ? clamp(drag.pos[0] - dx / drag.ox * 100) : 50,
-      drag.oy > 0.5 ? clamp(drag.pos[1] - dy / drag.oy * 100) : 50,
+      Math.abs(drag.ox) > 0.5 ? clamp(drag.pos[0] - dx / drag.ox * 100) : 50,
+      Math.abs(drag.oy) > 0.5 ? clamp(drag.pos[1] - dy / drag.oy * 100) : 50,
     ];
     layout(drag.it);
+  } else if (mode === 'fit') {
+    const it = drag.it;
+    it.fit = { ...drag.f0, manual: true,
+      dx: drag.f0.dx + (e.clientX - drag.sx) / (it.w * cam.z),
+      dy: drag.f0.dy + (e.clientY - drag.sy) / (it.h * cam.z) };
+    layout(it);
   } else if (mode === 'spawn') {
     if (!drag.moved && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 5) return;
     drag.moved = true;
@@ -544,6 +582,7 @@ function endPointer(e) {
   if (mode === 'move' && drag && drag.moved) scheduleSave();
   if (mode === 'resize' && drag) { syncFrom(drag.it); refreshOverlaysFor(drag.it.id); scheduleSave(); }
   if (mode === 'crop' && drag) { refreshOverlaysFor(drag.it.id); scheduleSave(); }
+  if (mode === 'fit') scheduleSave();
   if (mode === 'spawn' && drag) {
     const tgt = linkTarget;
     clearSpawnPreview(); setLinkTarget(null);
@@ -595,10 +634,24 @@ vp.addEventListener('wheel', e => {
   if (e.altKey) {
     // Alt + wheel over a cropped photo: zoom the photo inside its crop
     const it = itemAt(e.clientX, e.clientY);
+    const wdy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+    if (it && it.layers) {
+      // Alt + wheel on an AI overlay: size the croquis layer around the pointer
+      const r = it.el.getBoundingClientRect();
+      const px = (e.clientX - r.left) / r.width, py = (e.clientY - r.top) / r.height;
+      const f0 = it.fit || { s: 1, dx: 0, dy: 0 };
+      const s = Math.min(10, Math.max(0.1, f0.s * Math.exp(-wdy * 0.002))), k = s / f0.s;
+      it.fit = { s, dx: px - (px - f0.dx) * k, dy: py - (py - f0.dy) * k, manual: true };
+      layout(it);
+      clearTimeout(cropWheelTimer);
+      cropWheelTimer = setTimeout(scheduleSave, 250);
+      return;
+    }
     if (it && it.image) {
       it.cover = true; // a photo at its own ratio crops to itself, so this changes nothing until zoomed
-      const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
-      it.zoom = Math.min(8, Math.max(1, (it.zoom || 1) * Math.exp(-dy * 0.002)));
+      const dy = wdy;
+      // down to 20%: the croquis can be made smaller than its frame, not only larger
+      it.zoom = Math.min(8, Math.max(0.2, (it.zoom || 1) * Math.exp(-dy * 0.002)));
       layout(it);
       clearTimeout(cropWheelTimer);
       cropWheelTimer = setTimeout(() => { refreshOverlaysFor(it.id); scheduleSave(); }, 250);
@@ -758,12 +811,26 @@ const RED = '#e0262b';
 let dColor = '#111';
 const paperImg = document.getElementById('paperImg');
 const isOverlay = it => links.some(l => l.overlay === it.id);
+/** The layered overlay as one picture (for the red-pen paper): white, then both layers at 50%. */
+async function layeredPreview(it) {
+  const load = src => new Promise((ok, no) => { const im = new Image(); im.onload = () => ok(im); im.onerror = no; im.src = src; });
+  const [a, b] = await Promise.all([load(it.layerUrls.a), load(it.layerUrls.b)]);
+  const W = a.naturalWidth, H = a.naturalHeight, f = it.fit || { s: 1, dx: 0, dy: 0 };
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, W, H);
+  g.globalAlpha = 0.5;
+  g.drawImage(a, 0, 0, W, H);
+  g.drawImage(b, f.dx * W, f.dy * H, W * f.s, H * f.s);
+  return c.toDataURL('image/png');
+}
 function openDrawer(it) {
   dItem = it; dStrokes = (it.strokes || []).slice(); dUndo = []; dRedo = []; dCur = null; dPointer = null;
   // photos (the overlay) get a red pen drawn over the image; empty frames get black on white
   dColor = it.image ? RED : '#111';
   drawer.style.setProperty('--pen', dColor);
-  if (it.image) { paperImg.src = it.url; paperImg.hidden = false; } else { paperImg.hidden = true; paperImg.removeAttribute('src'); }
+  if (it.layers) { paperImg.hidden = false; layeredPreview(it).then(u => { if (dItem === it) paperImg.src = u; }); }
+  else if (it.image) { paperImg.src = it.url; paperImg.hidden = false; } else { paperImg.hidden = true; paperImg.removeAttribute('src'); }
   select([it.id]);
   drawer.hidden = false; drawer.classList.add('enter');
   layoutPaper(); setPen(penSize); syncUndo();
@@ -836,7 +903,7 @@ const lb = document.getElementById('lightbox'), lbImg = document.getElementById(
 let lbList = [], lbIdx = 0, lbFs = false;
 function openLightbox(it) {
   // browse photos in reading order: top-to-bottom, then left-to-right
-  lbList = items.filter(i => i.image).sort((a, b) => (Math.abs(a.y - b.y) < Math.min(a.h, b.h) / 2 ? a.x - b.x : a.y - b.y));
+  lbList = items.filter(i => i.image && !i.layers).sort((a, b) => (Math.abs(a.y - b.y) < Math.min(a.h, b.h) / 2 ? a.x - b.x : a.y - b.y));
   lbIdx = Math.max(0, lbList.indexOf(it));
   showLb();
   lb.hidden = false;
@@ -913,7 +980,7 @@ let sentCam = '';
 const itemJSON = it => JSON.stringify({
   id: it.id, x: it.x, y: it.y, w: it.w, h: it.h, order: it.order, image: it.image || null,
   cover: !!it.cover, pos: it.pos || null, zoom: it.zoom || null, label: it.label || null,
-  example: !!it.example, strokes: it.strokes || null,
+  example: !!it.example, strokes: it.strokes || null, layers: it.layers || null, fit: it.fit || null,
 });
 const linkJSON = l => JSON.stringify({ id: l.id, from: l.from, to: l.to, side: l.side, overlay: l.overlay || null });
 const camJSON = () => JSON.stringify({ x: cam.x, y: cam.y, z: cam.z });

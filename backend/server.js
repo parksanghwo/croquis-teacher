@@ -58,7 +58,12 @@ function cleanItem(id, body) {
   }
   if (body.cover) it.cover = true;
   if (Array.isArray(body.pos) && body.pos.length === 2 && body.pos.every(num)) it.pos = body.pos.map(v => clamp(v, 0, 100));
-  if (num(body.zoom) && body.zoom !== 1) it.zoom = clamp(body.zoom, 1, 8);
+  if (num(body.zoom) && body.zoom !== 1) it.zoom = clamp(body.zoom, 0.2, 8);
+  if (body.layers && board.images[body.layers.a] && board.images[body.layers.b]) it.layers = { a: body.layers.a, b: body.layers.b };
+  if (it.layers && body.fit && ['s', 'dx', 'dy'].every(k => num(body.fit[k]))) {
+    it.fit = { s: clamp(body.fit.s, 0.1, 10), dx: clamp(body.fit.dx, -5, 5), dy: clamp(body.fit.dy, -5, 5) };
+    if (body.fit.manual) it.fit.manual = true;
+  }
   if (typeof body.label === 'string' && body.label) it.label = body.label.slice(0, 80);
   if (body.example) it.example = true;
   const strokes = cleanStrokes(body.strokes);
@@ -74,7 +79,11 @@ function cleanLink(id, body) {
   return l;
 }
 
-const withUrl = it => (it.image ? { ...it, url: imageUrl(it.image) } : it);
+const withUrl = it => {
+  const out = it.image ? { ...it, url: imageUrl(it.image) } : { ...it };
+  if (it.layers) out.layerUrls = { a: imageUrl(it.layers.a), b: imageUrl(it.layers.b) };
+  return out;
+};
 
 /* ---------- API ---------- */
 const api = express.Router();
@@ -185,27 +194,37 @@ api.post('/links/:id/overlay', async (req, res) => {
     }
   }
 
-  let png, width, height;
-  // Auto-fit the drawings onto each other only when both sides are lines (AI-extracted or
-  // pen strokes); on a raw photo the "dark pixels" would be the background, not the figure.
+  // Fit the drawings onto each other only when both sides are lines (AI-extracted or pen
+  // strokes); on a raw photo the "dark pixels" would be the background, not the figure.
   const isLines = it => !it.image || ai;
   const align = isLines(A) && isLines(B);
-  let alignment = null;
-  try { ({ png, width, height, alignment } = await composeOverlay(A, B, drawA, drawB, { align })); }
+  const prev = link.overlay && board.items[link.overlay];
+  // a fit the person set by hand (Alt+drag / Alt+scroll) survives automatic rebuilds;
+  // clicking the arrow again ({ refit: true }) goes back to the automatic fit
+  const keepFit = align && !req.body?.refit && prev?.fit?.manual ? prev.fit : null;
+
+  let png, width, height, fit, layers;
+  try { ({ png, width, height, fit, layers } = await composeOverlay(A, B, drawA, drawB, { align, fit: keepFit })); }
   catch (err) { console.error('[overlay]', err); return res.status(500).json({ error: '겹쳐 보기 이미지를 만들지 못했습니다' }); }
   const label = ai ? '겹쳐 보기 · AI 선화 각 50%' : '겹쳐 보기 · 원본 각 50%';
 
-  const imgId = crypto.randomUUID().replace(/-/g, '');
-  const file = `${imgId}.png`;
-  await fs.promises.writeFile(path.join(UPLOAD_DIR, file), png);
-  board.images[imgId] = { file, width, height, bytes: png.length, createdAt: new Date().toISOString(), overlayOf: link.id };
+  const saveImage = async (buf, extra) => {
+    const id = crypto.randomUUID().replace(/-/g, '');
+    const file = `${id}.png`;
+    await fs.promises.writeFile(path.join(UPLOAD_DIR, file), buf);
+    board.images[id] = { file, width, height, bytes: buf.length, createdAt: new Date().toISOString(), overlayOf: link.id, ...extra };
+    return id;
+  };
+  const imgId = await saveImage(png);
+  const layerIds = layers ? { a: await saveImage(layers.a, { layer: 'a' }), b: await saveImage(layers.b, { layer: 'b' }) } : null;
+  const fitOut = fit ? { s: fit.s, dx: fit.dx, dy: fit.dy, ...(keepFit ? { manual: true } : {}) } : null;
 
   let ov = link.overlay && board.items[link.overlay];
   let created = false;
   if (ov) {
     const cx = ov.x + ov.w / 2, cy = ov.y + ov.h / 2;
     Object.assign(ov, { w: B.w, h: B.h, x: cx - B.w / 2, y: cy - B.h / 2, image: imgId, label });
-    delete ov.cover; delete ov.pos; delete ov.zoom; // red markup (strokes) is kept
+    delete ov.cover; delete ov.pos; delete ov.zoom; delete ov.layers; delete ov.fit; // red markup (strokes) is kept
   } else {
     const side = OPP[facingSide(B, A)], [nx, ny] = NORM[side];
     const order = Math.max(0, ...Object.values(board.items).map(i => i.order)) + 1;
@@ -215,9 +234,10 @@ api.post('/links/:id/overlay', async (req, res) => {
     link.overlay = id;
     created = true;
   }
+  if (layerIds) { ov.layers = layerIds; ov.fit = fitOut; }
   collectGarbage();
   persist();
-  res.status(created ? 201 : 200).json({ item: withUrl(ov), link, created, ai, alignment });
+  res.status(created ? 201 : 200).json({ item: withUrl(ov), link, created, ai, alignment: fitOut });
 });
 
 // Lets the page say up front whether arrows will use AI line extraction.
