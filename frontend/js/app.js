@@ -1192,12 +1192,33 @@ let penSize = 0.006;
 try { const v = parseFloat(localStorage.getItem('ic-pen')); if (v) penSize = v; } catch {}
 const paperRect = { x: 0, y: 0, w: 0, h: 0 };
 
+/* The space the full-screen paper may use: the part of the window actually visible (iPad
+   Safari's bars can cover some of innerHeight), minus the screen's safe areas (rounded
+   corners, home indicator) and the tools along the top and bottom. */
+const safeProbe = document.createElement('div');
+safeProbe.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;' +
+  'padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)';
+document.body.appendChild(safeProbe);
+function paperArea() {
+  const v = window.visualViewport;
+  const vx = v ? v.offsetLeft : 0, vy = v ? v.offsetTop : 0, vw = v ? v.width : innerWidth, vh = v ? v.height : innerHeight;
+  const cs = getComputedStyle(safeProbe);
+  const st = parseFloat(cs.paddingTop) || 0, sr = parseFloat(cs.paddingRight) || 0, sb = parseFloat(cs.paddingBottom) || 0, sl = parseFloat(cs.paddingLeft) || 0;
+  const gap = 16;
+  let top = vy + st + gap, bottom = vy + vh - sb - gap;
+  // keep clear of the tool rows (top right: eye/compare/undo, bottom left: pen width)
+  const tools = !topControls.hidden && topControls.getBoundingClientRect();
+  if (tools && tools.height) top = Math.max(top, tools.bottom + gap);
+  const pen = !penSizeEl.hidden && penSizeEl.getBoundingClientRect();
+  if (pen && pen.height) bottom = Math.min(bottom, pen.top - gap);
+  const left = vx + sl + 24, right = vx + vw - sr - 24;
+  return { x: left, y: top, w: Math.max(50, right - left), h: Math.max(50, bottom - top) };
+}
 function layoutPaper() {
-  const W = innerWidth, H = innerHeight, top = 76, side = 24, bottom = 24;
-  const aw = W - side * 2, ah = H - top - bottom, r = dItem.h / dItem.w;
-  let w = aw, h = aw * r;
-  if (h > ah) { h = ah; w = ah / r; }
-  paperRect.w = w; paperRect.h = h; paperRect.x = (W - w) / 2; paperRect.y = top + (ah - h) / 2;
+  const A = paperArea(), r = dItem.h / dItem.w;
+  let w = A.w, h = A.w * r;
+  if (h > A.h) { h = A.h; w = A.h / r; }
+  paperRect.w = w; paperRect.h = h; paperRect.x = A.x + (A.w - w) / 2; paperRect.y = A.y + (A.h - h) / 2;
   Object.assign(paper.style, { left: paperRect.x + 'px', top: paperRect.y + 'px', width: w + 'px', height: h + 'px' });
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
   dc.width = Math.round(w * dpr); dc.height = Math.round(h * dpr);
@@ -1254,7 +1275,7 @@ function openDrawer(it) {
   else if (it.image) { paperImg.src = it.url; paperImg.hidden = false; } else { paperImg.hidden = true; paperImg.removeAttribute('src'); }
   select([it.id]);
   drawer.hidden = false; drawer.classList.add('enter');
-  layoutPaper(); setPen(penSize); showCanvasTools(it); syncUndo();
+  showCanvasTools(it); layoutPaper(); setPen(penSize); syncUndo();
   const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
   if (!reduce) {
     paper.style.transition = 'none';
@@ -1318,7 +1339,10 @@ document.getElementById('clearBtn').onclick = () => { if (!dStrokes.length) retu
 document.getElementById('doneBtn').onclick = closeDrawer;
 drawer.addEventListener('pointerdown', e => { if (e.target === drawer) closeDrawer(); });
 drawer.addEventListener('wheel', e => e.preventDefault(), { passive: false });
-window.addEventListener('resize', () => { if (!drawer.hidden) layoutPaper(); });
+const relayoutPaper = () => { if (!drawer.hidden && dItem && !dCur) layoutPaper(); };
+window.addEventListener('resize', relayoutPaper);
+window.addEventListener('orientationchange', () => setTimeout(relayoutPaper, 250));
+if (window.visualViewport) window.visualViewport.addEventListener('resize', relayoutPaper); // Safari bars showing/hiding
 
 /* ---------- full-screen viewer ---------- */
 const lb = document.getElementById('lightbox'), lbImg = document.getElementById('lbImg'), lbCount = document.getElementById('lbCount');
