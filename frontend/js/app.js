@@ -1548,7 +1548,10 @@ const tapEnd = e => {
 window.addEventListener('pointerup', tapEnd, true);
 window.addEventListener('pointercancel', tapEnd, true);
 // keep Safari from zooming the page itself
-document.addEventListener('gesturestart', e => e.preventDefault());
+// keep Safari from zooming the page itself (pinch, double-tap); the board has its own zoom
+for (const t of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(t, e => e.preventDefault(), { passive: false });
+document.addEventListener('dblclick', e => e.preventDefault(), { passive: false });
+document.addEventListener('touchmove', e => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
 
 /* ---------- full-screen canvas: the only place the tools appear ---------- */
 // Double-click (finger double-tap) an overlay: it fills the screen as before, and only then
@@ -1561,8 +1564,26 @@ const topControls = document.getElementById('topControls'), penSizeEl = document
 const eyeBtn = document.getElementById('eyeBtn'), cmpBtn = document.getElementById('cmpBtn');
 function enterFocus(it) { openDrawer(it); }
 function exitFocus() {}
+/*
+ * Pin the tools to the corners of what is actually on screen. If iPad Safari has zoomed or
+ * scrolled the page, fixed elements stay on the unzoomed page and can end up off screen;
+ * this follows the visual viewport instead and undoes the zoom so the tools keep their size.
+ */
+function placeTools() {
+  const v = window.visualViewport;
+  const s = v ? v.scale || 1 : 1, x = v ? v.offsetLeft : 0, y = v ? v.offsetTop : 0;
+  const w = v ? v.width : innerWidth, h = v ? v.height : innerHeight;
+  topControls.style.transformOrigin = 'top left';
+  topControls.style.transform = `translate(${x}px, ${y}px) scale(${1 / s})`;
+  penSizeEl.style.transformOrigin = 'bottom left';
+  // its CSS anchors it to the bottom of the unzoomed page; move that corner to the visible bottom
+  penSizeEl.style.transform = `translate(${x}px, ${y + h - innerHeight}px) scale(${1 / s})`;
+  if (s === 1 && !x && !y && Math.abs(h - innerHeight) < 1) { topControls.style.transform = penSizeEl.style.transform = ''; }
+}
+if (window.visualViewport) for (const t of ['resize', 'scroll']) window.visualViewport.addEventListener(t, () => { if (!topControls.hidden) placeTools(); });
 function showCanvasTools(it) {
   topControls.hidden = false; penSizeEl.hidden = false;
+  placeTools();
   eyeBtn.hidden = cmpBtn.hidden = !it.layers;   // an empty frame has no photo line art
   syncEye();
 }

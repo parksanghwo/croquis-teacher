@@ -344,7 +344,8 @@ api.use((req, res) => res.status(404).json({ error: '없는 API 경로입니다'
 
 app.use('/api', api);
 app.use('/images', express.static(UPLOAD_DIR, { immutable: true, maxAge: '365d', fallthrough: false }));
-app.use(express.static(FRONTEND_DIR, { index: 'index.html' }));
+// always revalidate the page's own files, so an iPad never keeps running an old version
+app.use(express.static(FRONTEND_DIR, { index: 'index.html', setHeaders: res => res.set('Cache-Control', 'no-cache') }));
 
 app.listen(PORT, () => {
   refreshOldOverlays().catch(err => console.error('[overlay]', err.message));
