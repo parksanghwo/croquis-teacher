@@ -302,6 +302,7 @@ function removeSelected() {
     toast('연결선을 삭제했습니다'); return;
   }
   if (!selected.size) return;
+  if (focusId && selected.has(focusId)) exitFocus();
   const n = selected.size;
   items = items.filter(it => {
     if (selected.has(it.id)) { it.el.remove(); return false; }
@@ -697,6 +698,13 @@ let spaceDown = false;
 let marqueeEl = null;
 
 vp.addEventListener('pointerdown', e => {
+  if (focusId) {
+    const hitEl = e.target.closest && e.target.closest('.item');
+    const onFocused = hitEl && hitEl.dataset.id === focusId;
+    if (onFocused && e.pointerType === 'mouse' && e.button === 0 && !e.altKey && !e.shiftKey && !e.target.closest('.k, .h') && !ink && startInk(e)) return;
+    if (onFocused && e.pointerType === 'touch') { /* fingers pan while editing, never move the canvas */ }
+    else if (!onFocused && !(e.target.closest && e.target.closest('#topControls, #penSize'))) exitFocus();
+  }
   if (e.pointerType === 'pen' && !ink && startInk(e)) return; // Apple Pencil draws
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   vp.setPointerCapture(e.pointerId);
@@ -737,7 +745,13 @@ vp.addEventListener('pointerdown', e => {
     lastBubbleTap.t = now;
     mode = null; return;
   }
-  if (e.button === 1 || spaceDown || (!itemEl && isTouch)) {
+  // finger double-tap on an overlay: edit it (iPad)
+  if (isTouch && itemEl && pointers.size === 1) {
+    const now = performance.now(), tid = itemEl.dataset.id, tit = byId(tid);
+    if (lastItemTap.id === tid && now - lastItemTap.t < 350 && tit && isOverlay(tit) && tit.layers) { enterFocus(tit); lastItemTap.id = null; return; }
+    lastItemTap.id = tid; lastItemTap.t = now;
+  }
+  if (e.button === 1 || spaceDown || (isTouch && (!itemEl || itemEl.dataset.id === focusId))) {
     mode = 'pan'; drag = { sx: e.clientX, sy: e.clientY, cx: cam.x, cy: cam.y };
     vp.classList.add('panning'); e.preventDefault(); return;
   }
@@ -1061,7 +1075,7 @@ window.addEventListener('keydown', e => {
   }
   if (e.code === 'Space') { if (!spaceDown) { spaceDown = true; vp.classList.add('space'); } e.preventDefault(); return; }
   if (e.key === 'Delete' || e.key === 'Backspace') { removeSelected(); e.preventDefault(); return; }
-  if (e.key === 'Escape') { select([]); return; }
+  if (e.key === 'Escape') { if (focusId) { exitFocus(); return; } select([]); return; }
   if (mod && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) { inkRedoStep(); e.preventDefault(); return; }
   if (mod && e.key.toLowerCase() === 'z') { inkUndoStep(); e.preventDefault(); return; }
   if (mod && e.key.toLowerCase() === 'a') { select(items.map(i => i.id)); e.preventDefault(); return; }
@@ -1142,7 +1156,11 @@ vp.addEventListener('dblclick', e => {
     const itemEl = el.closest && el.closest('.item');
     if (itemEl) { it = byId(itemEl.dataset.id); break; }
   }
-  if (it && (!it.image || isOverlay(it))) openDrawer(it);
+  if (it && isOverlay(it)) {
+    if (!it.layers) { upgradeOverlay(it); return; }
+    enterFocus(it); // while editing, a double-click is just drawing: leave with Esc or a click elsewhere
+  }
+  else if (it && !it.image) openDrawer(it);
   else if (it) openLightbox(it);
 });
 
@@ -1352,7 +1370,10 @@ api.config().then(c => Object.assign(serverConfig, c)).catch(() => {});
 let ink = null;                       // the stroke being drawn: { pid, it, before, cur, c, g }
 const inkUndo = [], inkRedo = [];     // board-wide pen history: { id, before, after }
 const undoEl = document.getElementById('inkUndo'), redoEl = document.getElementById('inkRedo');
-function syncInkButtons() { undoEl.disabled = !inkUndo.length; redoEl.disabled = !inkRedo.length; }
+// While one overlay is being edited (focus mode) undo/redo only touch that canvas.
+const inScope = e => !focusId || e.id === focusId;
+const lastIn = list => { for (let i = list.length - 1; i >= 0; i--) if (inScope(list[i])) return i; return -1; };
+function syncInkButtons() { undoEl.disabled = lastIn(inkUndo) < 0; redoEl.disabled = lastIn(inkRedo) < 0; }
 function recordStrokes(it, before) {
   inkUndo.push({ id: it.id, before, after: (it.strokes || []).slice() });
   if (inkUndo.length > 300) inkUndo.shift();
@@ -1367,14 +1388,16 @@ function applyStrokes(it, list) {
   scheduleReview(it);
 }
 function inkUndoStep() {
-  const e = inkUndo.pop();
-  if (!e) { toast('되돌릴 펜 선이 없습니다', 1200); return; }
+  const i = lastIn(inkUndo);
+  if (i < 0) { toast('되돌릴 펜 선이 없습니다', 1200); return; }
+  const [e] = inkUndo.splice(i, 1);
   const it = byId(e.id); if (it) applyStrokes(it, e.before);
   inkRedo.push(e); syncInkButtons();
 }
 function inkRedoStep() {
-  const e = inkRedo.pop();
-  if (!e) { toast('다시 실행할 펜 선이 없습니다', 1200); return; }
+  const i = lastIn(inkRedo);
+  if (i < 0) { toast('다시 실행할 펜 선이 없습니다', 1200); return; }
+  const [e] = inkRedo.splice(i, 1);
   const it = byId(e.id); if (it) applyStrokes(it, e.after);
   inkUndo.push(e); syncInkButtons();
 }
@@ -1480,20 +1503,43 @@ window.addEventListener('pointercancel', tapEnd, true);
 // keep Safari from zooming the page itself
 document.addEventListener('gesturestart', e => e.preventDefault());
 
-/* eye: show / hide the photo line art on every overlay */
+/* eye: show / hide the photo line art of the overlay being edited */
 const eyeBtn = document.getElementById('eyeBtn');
-const layeredOverlays = () => items.filter(i => i.layers && isOverlay(i));
 function syncEye() {
-  const ovs = layeredOverlays();
-  eyeBtn.setAttribute('aria-pressed', String(!(ovs.length && ovs.every(o => o.refOff))));
+  const it = focusId && byId(focusId);
+  eyeBtn.setAttribute('aria-pressed', String(!(it && it.refOff)));
 }
 eyeBtn.onclick = () => {
-  const ovs = layeredOverlays();
-  if (!ovs.length) { toast('겹쳐 보기가 아직 없습니다', 1500); return; }
-  const hide = !ovs.every(o => o.refOff);
-  for (const o of ovs) { o.refOff = hide; layout(o); }
+  const it = focusId && byId(focusId);
+  if (!it) return;
+  it.refOff = !it.refOff; layout(it);
   syncEye(); scheduleSave();
 };
+
+/* ---------- focus mode: double-click one overlay to edit it ---------- */
+// The eye, undo/redo and pen width only appear while one overlay is being edited, and act
+// on that overlay alone. Pen width is the exception: once changed it stays for every canvas.
+// While editing, the mouse draws on that overlay too (the Pencil draws anywhere).
+let focusId = null;
+const lastItemTap = { id: null, t: 0 };
+const topControls = document.getElementById('topControls'), penSizeEl = document.getElementById('penSize');
+function enterFocus(it) {
+  if (focusId === it.id) return;
+  exitFocus();
+  focusId = it.id;
+  select([it.id]);
+  it.el.classList.add('focused');
+  topControls.hidden = false; penSizeEl.hidden = false;
+  syncEye(); syncInkButtons();
+}
+function exitFocus() {
+  if (!focusId) return;
+  const it = byId(focusId);
+  if (it && it.el) it.el.classList.remove('focused');
+  focusId = null;
+  topControls.hidden = true; penSizeEl.hidden = true;
+  syncInkButtons();
+}
 
 /* pen width: the tapered slider (1–20) is the pen width in thousandths of the frame width */
 const penRange = document.getElementById('penRange'), penVal = document.getElementById('penVal');
