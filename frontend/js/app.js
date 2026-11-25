@@ -96,6 +96,7 @@ function makeEl(it) {
 }
 function fillContent(it, el) {
   const old = el.querySelector('.clip, .frame-box'); if (old) old.remove();
+  if (it.image || (it.strokes && it.strokes.length)) { const m = el.querySelector('.pin-msg'); if (m) m.remove(); } // no longer empty
   let node;
   if (it.layers && it.layerUrls) {
     // AI overlay kept as two layers on white, each at 50%: reference line art (a) fixed,
@@ -420,7 +421,7 @@ async function searchPinsFor(fid, at = null) {
       items = items.filter(o => o !== frame); frame.el.remove();
       links = links.filter(l => l.to !== frame.id && l.from !== frame.id);
       selected.delete(frame.id); refreshSel();
-    } else if (frame) frame.el.classList.remove('pin-wait');
+    } else if (frame) { frame.el.classList.remove('pin-wait'); frameMsg(frame, ''); }
     let x0 = at ? at.x : right + GAP * 1.5;
     const y0 = at ? at.y : node.y;
     const hits = x => items.some(o => o.x < x + gw + gap && o.x + o.w > x - gap && o.y < y0 + gh + gap && o.y + o.h > y0 - gap);
@@ -436,10 +437,23 @@ async function searchPinsFor(fid, at = null) {
     renderLinks(); scheduleSave();
   } catch (err) {
     toast(err.message);
-    if (at && at.frame && at.frame.el) at.frame.el.classList.remove('pin-wait'); // the empty canvas stays
+    if (at && at.frame && at.frame.el) {  // the empty canvas stays, with the reason on it
+      at.frame.el.classList.remove('pin-wait');
+      frameMsg(at.frame, err.message, true);
+    }
   } finally {
     pinSearching.delete(fid); renderGroups();
   }
+}
+
+/** A line of status on an empty canvas (not saved); empty text removes it. */
+function frameMsg(it, text, error = false) {
+  let el = it.el && it.el.querySelector('.pin-msg');
+  if (!text) { if (el) el.remove(); return; }
+  if (!el) { el = document.createElement('div'); el.className = 'pin-msg'; it.el.appendChild(el); }
+  el.classList.toggle('err', error);
+  el.textContent = text; // server text: set as text, never markup
+  el.style.fontSize = Math.max(14, it.w * 0.075) + 'px';
 }
 
 /** Stable id of a feature circle: group + feature name. */
@@ -963,7 +977,7 @@ function endPointer(e) {
           const c = drag.moved ? toWorld(e.clientX, e.clientY) : null;
           const fr = spawnFrame(drag.src, drag.side, c && c.x, c && c.y, drag.size);
           if (serverConfig.ai && !pinSearching.has(drag.src.id)) {
-            fr.el.classList.add('pin-wait');
+            fr.el.classList.add('pin-wait'); frameMsg(fr, 'Pinterest에서 찾는 중');
             searchPinsFor(drag.src.id, { x: fr.x, y: fr.y, frame: fr });
           }
         }

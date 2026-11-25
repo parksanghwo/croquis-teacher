@@ -265,3 +265,5 @@ body{background:var(--bg);color:var(--ink);font-family:var(--f-ui);overscroll-be
 .item.pin-wait{outline:2px dashed var(--accent);outline-offset:4px;animation:pinwait 1s ease-in-out infinite alternate}
 @keyframes pinwait{from{opacity:.55}to{opacity:1}}
 @media (prefers-reduced-motion:reduce){.item.pin-wait{animation:none}}
+.item .pin-msg{position:absolute;left:8%;right:8%;top:60%;text-align:center;color:var(--muted);line-height:1.4;pointer-events:none;word-break:keep-all}
+.item .pin-msg.err{color:#c0392b}

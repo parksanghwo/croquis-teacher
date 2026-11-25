@@ -84,19 +84,32 @@ async function searchPinPages(feature) {
   return urls.slice(0, 8).map(url => ({ url, note: notes.get(url) || '' }));
 }
 
-/** Step 2: the pin's preview image (og:image), downloaded and checked. */
-async function pinImage({ url: pageUrl, note }) {
-  const page = await fetch(pageUrl, { headers: { 'User-Agent': BROWSER_UA, 'Accept-Language': 'ko,en;q=0.8' }, redirect: 'follow', signal: AbortSignal.timeout(15_000) });
-  if (!page.ok || !allowedUrl(page.url)) throw new Error(`핀 페이지 ${page.status}`);
-  const html = (await page.text()).slice(0, 2_000_000);
+/** The pin's picture address: og:image / twitter:image, else the first full-size pinimg.com
+ *  image in the page, else Pinterest's oEmbed thumbnail (pages often come without meta tags). */
+async function pinImageUrl(pageUrl) {
+  let page = null, html = '';
+  try {
+    page = await fetch(pageUrl, { headers: { 'User-Agent': BROWSER_UA, 'Accept-Language': 'ko,en;q=0.8' }, redirect: 'follow', signal: AbortSignal.timeout(15_000) });
+    if (page.ok && allowedUrl(page.url)) html = (await page.text()).slice(0, 3_000_000);
+  } catch {}
   const meta = name => {
-    const re = new RegExp(`<meta[^>]+(?:property|name)=["']${name}["'][^>]*>`, 'i');
-    const tag = html.match(re)?.[0];
+    const tag = html.match(new RegExp(`<meta[^>]+(?:property|name)=["']${name}["'][^>]*>`, 'i'))?.[0];
     return tag && tag.match(/content=["']([^"']+)["']/i)?.[1];
   };
   let src = meta('og:image') || meta('twitter:image') || meta('twitter:image:src');
-  if (!src) throw new Error('미리보기 이미지가 없습니다');
-  src = new URL(src.replace(/&amp;/g, '&'), page.url).toString();
+  if (!src) src = html.match(/https:\/\/i\.pinimg\.com\/(?:originals|736x|564x)\/[0-9a-f/]+\.(?:jpg|jpeg|png|webp)/i)?.[0];
+  if (src) return new URL(src.replace(/&amp;/g, '&'), page.url).toString();
+  try {
+    const o = await fetch(`https://www.pinterest.com/oembed.json?url=${encodeURIComponent(pageUrl)}`, { headers: { 'User-Agent': BROWSER_UA }, signal: AbortSignal.timeout(15_000) });
+    const j = o.ok ? await o.json() : null;
+    if (j?.thumbnail_url) return j.thumbnail_url.replace(/\/(?:236x|474x)\//, '/736x/');
+  } catch {}
+  throw new Error(page ? (page.ok ? '핀 페이지에 이미지 주소가 없음' : `핀 페이지 ${page.status}`) : '핀 페이지에 연결하지 못함');
+}
+
+/** Step 2: the pin's picture, downloaded and checked. */
+async function pinImage({ url: pageUrl, note }) {
+  const src = await pinImageUrl(pageUrl);
   if (!allowedUrl(src)) throw new Error('Pinterest 밖의 이미지 주소');
   const img = await fetch(src, { headers: { 'User-Agent': BROWSER_UA }, signal: AbortSignal.timeout(20_000) });
   if (!img.ok) throw new Error(`이미지 ${img.status}`);
@@ -146,10 +159,20 @@ async function saveImage(c) {
 /** Up to `count` Pinterest photos for a feature → [{ id, url, width, height, source }]. */
 export async function findPinPhotos(feature, count = 4) {
   const started = Date.now();
-  const pages = await searchPinPages(feature);
-  if (!pages.length) throw new Error('조건에 맞는 핀을 찾지 못했습니다');
-  const got = (await Promise.allSettled(pages.map(pinImage))).filter(r => r.status === 'fulfilled').map(r => r.value);
-  if (!got.length) throw new Error('핀 이미지를 가져오지 못했습니다');
+  let pages;
+  try { pages = await searchPinPages(feature); }
+  catch (err) { throw new Error(err.name === 'TimeoutError' ? 'Pinterest 검색이 3분 안에 끝나지 않았습니다' : `Pinterest 검색 오류: ${err.message}`); }
+  if (!pages.length) throw new Error('웹 검색에서 개별 핀 링크를 찾지 못했습니다');
+  const settled = await Promise.allSettled(pages.map(pinImage));
+  const got = settled.filter(r => r.status === 'fulfilled').map(r => r.value);
+  if (!got.length) {
+    // the most common reason, e.g. "핀 페이지 403 (5/6)"
+    const why = new Map();
+    for (const r of settled) if (r.status === 'rejected') why.set(r.reason.message, (why.get(r.reason.message) || 0) + 1);
+    const [top, n] = [...why].sort((a, b) => b[1] - a[1])[0];
+    console.error('[pins] no images:', [...why].map(([m, k]) => `${m} ×${k}`).join(', '), pages.map(p => p.url).join(' '));
+    throw new Error(`핀 ${pages.length}개를 찾았지만 사진을 가져오지 못했습니다: ${top} (${n}/${pages.length})`);
+  }
   const order = await keepFitting(feature, got);
   const chosen = (order.length ? order : got.map((_, i) => i)).slice(0, count).map(i => got[i]);
   const photos = [];
