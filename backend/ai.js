@@ -71,15 +71,53 @@ export async function restoreFromModel(buf, crop, w, h) {
   return flat.extract({ left, top, width: cw, height: ch }).resize(w, h, { fit: 'fill' }).png().toBuffer();
 }
 
-/** White paper → transparent: darkness becomes alpha, lines become near-black ink. */
-export async function toTransparentInk(buf) {
-  const { data, info } = await sharp(buf).greyscale().raw().toBuffer({ resolveWithObject: true });
-  const out = Buffer.alloc(info.width * info.height * 4);
-  for (let i = 0; i < info.width * info.height; i++) {
-    const a = Math.max(0, Math.min(255, Math.round((255 - data[i * info.channels]) * (255 / 228))));
-    out[i * 4] = 27; out[i * 4 + 1] = 27; out[i * 4 + 2] = 31; out[i * 4 + 3] = a;
+function boxBlur(src, w, h, r) {
+  const tmp = new Float32Array(src.length), out = new Float32Array(src.length);
+  for (let y = 0; y < h; y++) {
+    let acc = 0;
+    for (let x = -r; x <= r; x++) acc += src[y * w + Math.min(w - 1, Math.max(0, x))];
+    for (let x = 0; x < w; x++) {
+      tmp[y * w + x] = acc / (2 * r + 1);
+      acc += src[y * w + Math.min(w - 1, x + r + 1)] - src[y * w + Math.max(0, x - r)];
+    }
   }
-  return sharp(out, { raw: { width: info.width, height: info.height, channels: 4 } }).png().toBuffer();
+  for (let x = 0; x < w; x++) {
+    let acc = 0;
+    for (let y = -r; y <= r; y++) acc += tmp[Math.min(h - 1, Math.max(0, y)) * w + x];
+    for (let y = 0; y < h; y++) {
+      out[y * w + x] = acc / (2 * r + 1);
+      acc += tmp[Math.min(h - 1, y + r + 1) * w + x] - tmp[Math.max(0, y - r) * w + x];
+    }
+  }
+  return out;
+}
+
+export const INK_VERSION = 2;
+/**
+ * Lines only, on a transparent background. Each pixel is compared with the brightness
+ * around it (the local "paper"), so wide even areas — off-white or gray paper, a gray or
+ * checker "transparent" background, flat gray shading inside clothes — count as paper and
+ * vanish, while thin marks darker than their surroundings stay as near-black ink.
+ */
+export async function toTransparentInk(buf) {
+  const { data, info } = await sharp(buf).flatten({ background: '#ffffff' }).greyscale().raw().toBuffer({ resolveWithObject: true });
+  const W = info.width, H = info.height, n = W * H;
+  const lum = new Float32Array(n);
+  for (let i = 0; i < n; i++) lum[i] = data[i * info.channels];
+  const r = Math.max(3, Math.round(Math.max(W, H) * 0.012));
+  // local paper level: blur once, lift line pixels up to that level so lines don't drag
+  // the estimate down, then blur again
+  const first = boxBlur(lum, W, H, r);
+  const lifted = new Float32Array(n);
+  for (let i = 0; i < n; i++) lifted[i] = Math.max(lum[i], first[i]);
+  const paper = boxBlur(lifted, W, H, r);
+  const out = Buffer.alloc(n * 4);
+  for (let i = 0; i < n; i++) {
+    const norm = lum[i] / Math.max(1, paper[i]);              // 1 on paper, lower on a line
+    const t = Math.max(0, Math.min(1, (0.93 - norm) / (0.93 - 0.42)));
+    out[i * 4] = 27; out[i * 4 + 1] = 27; out[i * 4 + 2] = 31; out[i * 4 + 3] = Math.round(255 * Math.pow(t, 1.15));
+  }
+  return sharp(out, { raw: { width: W, height: H, channels: 4 } }).png().toBuffer();
 }
 
 async function callModel(png, size, prompt) {
@@ -112,26 +150,46 @@ const inflight = new Map();
  * Returns the id of the processed (transparent line) version of an uploaded image,
  * running the model only the first time for each image and kind.
  */
+async function saveProcessed(png, meta, imageId, kind, extra = {}) {
+  const id = crypto.randomUUID().replace(/-/g, '');
+  const file = `${id}.png`;
+  await fs.promises.writeFile(path.join(UPLOAD_DIR, file), png);
+  board.images[id] = { file, width: meta.width, height: meta.height, bytes: png.length, createdAt: new Date().toISOString(), aiOf: imageId, kind, attached: true, ...extra };
+  return id;
+}
+
+/**
+ * Returns the id of the processed (transparent line) version of an uploaded image,
+ * running the model only the first time for each image and kind. A result made with an
+ * older line-extraction step is redone from the model's stored answer, without a new call.
+ */
 export function processedImage(imageId, kind) {
   const meta = board.images[imageId];
   if (!meta) throw new Error('원본 이미지를 찾을 수 없습니다');
   const cached = meta.ai?.[kind];
-  if (cached && board.images[cached]) return Promise.resolve(cached);
+  const fresh = cached && board.images[cached] && board.images[cached].inkV === INK_VERSION;
+  if (fresh) return Promise.resolve(cached);
   const k = `${imageId}:${kind}`;
   if (inflight.has(k)) return inflight.get(k);
   const job = (async () => {
     const started = Date.now();
-    const prep = await prepareForModel(imagePath(imageId), meta.width, meta.height);
-    const result = await callModel(prep.png, prep.size, PROMPTS[kind]);
-    const restored = await restoreFromModel(result, prep.crop, meta.width, meta.height);
-    const png = await toTransparentInk(restored);
-    const id = crypto.randomUUID().replace(/-/g, '');
-    const file = `${id}.png`;
-    await fs.promises.writeFile(path.join(UPLOAD_DIR, file), png);
-    board.images[id] = { file, width: meta.width, height: meta.height, bytes: png.length, createdAt: new Date().toISOString(), aiOf: imageId, kind, model: aiConfig().model, attached: true };
+    let raw = meta.aiRaw?.[kind] && board.images[meta.aiRaw[kind]] ? await fs.promises.readFile(imagePath(meta.aiRaw[kind])) : null;
+    let rawId = raw ? meta.aiRaw[kind] : null;
+    if (!raw && cached && board.images[cached]) {
+      // an older result without the model's answer kept: rebuild it from the old ink on white
+      raw = await sharp(imagePath(cached)).flatten({ background: '#ffffff' }).png().toBuffer();
+    }
+    if (!raw) {
+      const prep = await prepareForModel(imagePath(imageId), meta.width, meta.height);
+      const result = await callModel(prep.png, prep.size, PROMPTS[kind]);
+      raw = await restoreFromModel(result, prep.crop, meta.width, meta.height);
+      rawId = await saveProcessed(raw, meta, imageId, kind, { raw: true, model: aiConfig().model });
+    }
+    const id = await saveProcessed(await toTransparentInk(raw), meta, imageId, kind, { inkV: INK_VERSION, model: aiConfig().model });
     meta.ai = { ...meta.ai, [kind]: id };
+    if (rawId) meta.aiRaw = { ...meta.aiRaw, [kind]: rawId };
     persist();
-    console.log(`[ai] ${kind} for ${imageId} in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+    console.log(`[ai] ${kind} for ${imageId} in ${((Date.now() - started) / 1000).toFixed(1)}s${cached ? ' (line extraction redone)' : ''}`);
     return id;
   })().finally(() => inflight.delete(k));
   inflight.set(k, job);

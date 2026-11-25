@@ -183,11 +183,12 @@ function facingSide(target, from) {
 }
 
 // Build (or rebuild) the 50/50 overlay of an arrow's two ends, placed beside the target.
-api.post('/links/:id/overlay', async (req, res) => {
-  const link = board.links[req.params.id];
-  if (!link) return res.status(404).json({ error: '화살표를 찾을 수 없습니다' });
+class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
+
+/** Build (or rebuild) an arrow's overlay. Used by the route and by the start-up refresh. */
+async function buildOverlay(link, { refit = false } = {}) {
   const A = board.items[link.from], B = board.items[link.to];
-  if (!hasContent(A) || !hasContent(B)) return res.status(422).json({ error: '겹쳐 보려면 화살표 양쪽에 사진이나 그림이 있어야 합니다' });
+  if (!hasContent(A) || !hasContent(B)) throw new HttpError(422, '겹쳐 보려면 화살표 양쪽에 사진이나 그림이 있어야 합니다');
 
   // With an API key: the arrow's start goes through prompt 1 (photo → line art) and its end
   // through prompt 2 (croquis photo → pencil lines) before they are mixed. Drawings made on
@@ -202,7 +203,7 @@ api.post('/links/:id/overlay', async (req, res) => {
       ]);
     } catch (err) {
       console.error('[ai]', err.message);
-      return res.status(502).json({ error: err.message });
+      throw new HttpError(502, err.message);
     }
   }
 
@@ -213,11 +214,11 @@ api.post('/links/:id/overlay', async (req, res) => {
   const prev = link.overlay && board.items[link.overlay];
   // a fit the person set by hand (Alt+drag / Alt+scroll) survives automatic rebuilds;
   // clicking the arrow again ({ refit: true }) goes back to the automatic fit
-  const keepFit = !req.body?.refit && prev?.fit?.manual ? prev.fit : null;
+  const keepFit = !refit && prev?.fit?.manual ? prev.fit : null;
 
   let png, width, height, fit, layers;
   try { ({ png, width, height, fit, layers } = await composeOverlay(A, B, drawA, drawB, { align, fit: keepFit })); }
-  catch (err) { console.error('[overlay]', err); return res.status(500).json({ error: '겹쳐 보기 이미지를 만들지 못했습니다' }); }
+  catch (err) { console.error('[overlay]', err); throw new HttpError(500, '겹쳐 보기 이미지를 만들지 못했습니다'); }
   const label = ai ? '겹쳐 보기 · AI 선화 (사진 30% · 크로키 50%)' : '겹쳐 보기 · 원본 (사진 30% · 크로키 50%)';
 
   const saveImage = async (buf, extra) => {
@@ -249,8 +250,40 @@ api.post('/links/:id/overlay', async (req, res) => {
   ov.layers = layerIds; ov.fit = fitOut;
   collectGarbage();
   persist();
-  res.status(created ? 201 : 200).json({ item: withUrl(ov), link, created, ai, alignment: align && !keepFit ? fitOut : null });
+  return { created, body: { item: withUrl(ov), link, created, ai, alignment: align && !keepFit ? fitOut : null } };
+}
+
+api.post('/links/:id/overlay', async (req, res) => {
+  const link = board.links[req.params.id];
+  if (!link) return res.status(404).json({ error: '화살표를 찾을 수 없습니다' });
+  try {
+    const r = await buildOverlay(link, { refit: !!req.body?.refit });
+    res.status(r.created ? 201 : 200).json(r.body);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
 });
+
+/**
+ * On start: overlays whose AI line images came from an older line-extraction step are
+ * rebuilt (the extraction is redone from stored results, so the model is not called again,
+ * and a fit set by hand is kept).
+ */
+async function refreshOldOverlays() {
+  if (!aiEnabled()) return;
+  const { INK_VERSION } = await import('./ai.js');
+  const stale = Object.values(board.links).filter(l => {
+    if (!l.overlay || !board.items[l.overlay]) return false;
+    return [[board.items[l.from], 'lineart'], [board.items[l.to], 'pencil']].some(([it, kind]) => {
+      const id = it?.image && board.images[it.image]?.ai?.[kind];
+      return id && board.images[id] && board.images[id].inkV !== INK_VERSION;
+    });
+  });
+  for (const l of stale) {
+    try { await buildOverlay(l); console.log(`[overlay] rebuilt ${l.overlay} with the new line extraction`); }
+    catch (err) { console.error('[overlay] refresh failed:', err.message); }
+  }
+}
 
 // Correction log (hidden table): analyse the red-pen marks on one canvas.
 api.post('/items/:id/review', async (req, res) => {
@@ -314,6 +347,7 @@ app.use('/images', express.static(UPLOAD_DIR, { immutable: true, maxAge: '365d',
 app.use(express.static(FRONTEND_DIR, { index: 'index.html' }));
 
 app.listen(PORT, () => {
+  refreshOldOverlays().catch(err => console.error('[overlay]', err.message));
   console.log(`끄로뀌끼끼끼끼익: http://localhost:${PORT}`);
   console.log(aiEnabled()
     ? `AI 선화 추출 켜짐 (이미지 모델: ${aiConfig().model})`
