@@ -32,6 +32,9 @@ export const api = {
   }),
   /** Ask the AI to log the red-pen corrections on this item (hidden table) → {rows, skipped?} */
   review: id => request('POST', `/items/${id}/review`),
+  /** Group overlays: bracket + circles with the features their correction logs share → group */
+  createGroup: members => request('POST', '/groups', { members }),
+  deleteGroup: id => request('DELETE', `/groups/${id}`),
   putItem: item => request('PUT', `/items/${item.id}`, item),
   deleteItem: id => request('DELETE', `/items/${id}`),
   putLink: link => request('PUT', `/links/${link.id}`, link),

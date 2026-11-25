@@ -17,6 +17,9 @@ const cam = { x: 0, y: 0, z: 1 };
 let items = [];            // {id,x,y,w,h,order,image,url,el,cover,pos,zoom,strokes,label,example}; image = server image id
 const selected = new Set();
 let links = [];            // {id, from, to, side}  side = knob side on the source
+let groups = [];           // {id, members[], features[{name,type,drawings[]}], total, pending?}
+let selGroup = null;
+let lastGroupKey = '';
 let selLink = null;
 const linksSvg = document.getElementById('links');
 const SVGNS = 'http://www.w3.org/2000/svg';
@@ -188,6 +191,7 @@ function renderLinks() {
     keep.add(l.id);
   }
   for (const g of [...linksSvg.querySelectorAll('g[data-id]')]) if (!keep.has(g.dataset.id)) g.remove();
+  renderGroups();
 }
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
@@ -270,6 +274,12 @@ async function addBlobs(blobs, at, target) {
 }
 
 function removeSelected() {
+  if (selGroup) {
+    const id = selGroup; selGroup = null;
+    groups = groups.filter(g => g.id !== id); renderGroups();
+    api.deleteGroup(id).catch(err => toast(err.message));
+    return;
+  }
   if (selLink) {
     links = links.filter(l => l.id !== selLink); selLink = null; renderLinks(); scheduleSave();
     toast('연결선을 삭제했습니다'); return;
@@ -281,6 +291,7 @@ function removeSelected() {
     return true;
   });
   links = links.filter(l => !selected.has(l.from) && !selected.has(l.to));
+  groups = groups.map(g => ({ ...g, members: g.members.filter(id => !selected.has(id)) })).filter(g => g.members.length >= 2);
   selected.clear(); refreshSel(); renderLinks(); scheduleSave();
   toast(`${n}개를 삭제했습니다`);
 }
@@ -353,6 +364,99 @@ async function autoFrame(it) {
     layout(it); scheduleSave();
   } catch { /* keep the centred crop */ }
 }
+/* ---------- groups: bracket + circles of common features ---------- */
+// Shift+click several overlays (grouped when Shift is released) or lasso them: a curved
+// bracket joins them on the right and circles show the errors their correction logs share,
+// bigger when more drawings share it.
+function groupBox(g) {
+  const ms = g.members.map(byId).filter(Boolean);
+  if (ms.length < 2) return null;
+  let L = Infinity, T = Infinity, R = -Infinity, B = -Infinity;
+  for (const m of ms) { L = Math.min(L, m.x); T = Math.min(T, m.y); R = Math.max(R, m.x + m.w); B = Math.max(B, m.y + m.h); }
+  return { L, T, R, B };
+}
+function renderGroups() {
+  const keep = new Set();
+  for (const g of groups) {
+    const bx = groupBox(g);
+    if (!bx) continue;
+    keep.add(g.id);
+    const H = bx.B - bx.T, gap = Math.max(30, H * 0.05), bulge = Math.max(30, H * 0.08);
+    const x0 = bx.R + gap;
+    // the bracket ")" — control point at twice the bulge puts its middle `bulge` to the right
+    let el = linksSvg.querySelector(`g[data-gid="${g.id}"]`);
+    if (!el) { el = document.createElementNS(SVGNS, 'g'); el.dataset.gid = g.id; el.setAttribute('class', 'grp'); linksSvg.appendChild(el); }
+    const d = `M${x0},${bx.T} Q${x0 + bulge * 2},${(bx.T + bx.B) / 2} ${x0},${bx.B}`;
+    if (el.dataset.d !== d) {
+      el.dataset.d = d;
+      el.innerHTML = `<path class="hit" vector-effect="non-scaling-stroke" d="${d}"/><path class="line" vector-effect="non-scaling-stroke" d="${d}"/>`;
+    }
+    el.classList.toggle('sel', selGroup === g.id);
+    el.classList.toggle('busy', !!g.pending);
+    // circles, zig-zagging down two columns like the sketch
+    let box = world.querySelector(`.bubbles[data-gid="${g.id}"]`);
+    if (!box) { box = document.createElement('div'); box.className = 'bubbles'; box.dataset.gid = g.id; world.appendChild(box); }
+    box.classList.toggle('sel', selGroup === g.id);
+    const fs = g.features || [];
+    const sig = JSON.stringify(fs.map(f => [f.name, f.drawings.length]));
+    if (box.dataset.sig !== sig) {
+      box.dataset.sig = sig;
+      box.innerHTML = '';
+      for (const f of fs) {
+        const b = document.createElement('div');
+        b.className = 'bubble';
+        b.textContent = f.name;                              // model text: never markup
+        b.title = `${f.type ? f.type + ' · ' : ''}${f.drawings.join(', ')}`;
+        box.appendChild(b);
+      }
+    }
+    const rows = Math.max(1, Math.ceil(fs.length / 2));
+    const D = Math.max(120, Math.min(H / (rows + 0.5), H * 0.42, 460));
+    const total = g.total || g.members.length;
+    [...box.children].forEach((b, i) => {
+      const share = Math.min(1, fs[i].drawings.length / total);
+      const dia = D * (0.68 + 0.32 * share);
+      const col = i % 2, row = Math.floor(i / 2);
+      const cx = x0 + bulge + gap + D * 0.55 + col * D * 0.95;
+      const cy = bx.T + D * 0.55 + row * D * 1.0 + col * D * 0.5;
+      Object.assign(b.style, { left: cx - dia / 2 + 'px', top: cy - dia / 2 + 'px', width: dia + 'px', height: dia + 'px', fontSize: Math.max(10, dia * 0.095) + 'px' });
+    });
+  }
+  for (const el of [...linksSvg.querySelectorAll('g[data-gid]')]) if (!keep.has(el.dataset.gid)) el.remove();
+  for (const el of [...world.querySelectorAll('.bubbles')]) if (!keep.has(el.dataset.gid)) el.remove();
+}
+function upsertGroup(g) {
+  g.pending = false;
+  const i = groups.findIndex(x => x.id === g.id);
+  if (i >= 0) groups[i] = g; else groups.push(g);
+}
+function groupSelectedOverlays() {
+  const ids = [...selected].filter(id => { const it = byId(id); return it && it.layers && isOverlay(it); });
+  if (ids.length < 2) return;
+  const key = [...ids].sort().join(',');
+  if (key === lastGroupKey) return;
+  lastGroupKey = key;
+  makeGroup(ids);
+}
+async function makeGroup(ids) {
+  const existing = groups.find(g => g.members.length === ids.length && g.members.every(m => ids.includes(m)));
+  const tmp = existing || { id: 'tmp' + uid(), members: ids, features: [], total: ids.length };
+  tmp.pending = true;
+  if (!existing) groups.push(tmp);
+  renderGroups();
+  try {
+    await flushSave(); // the server reads the overlays (and their red marks) it has stored
+    const g = await api.createGroup(ids);
+    groups = groups.filter(x => x !== tmp);
+    upsertGroup(g);
+  } catch (err) {
+    tmp.pending = false;
+    if (!existing) groups = groups.filter(x => x !== tmp);
+    toast(err.message);
+  }
+  renderGroups();
+}
+
 /* ---------- arrow click → overlay: reference line art at 30%, croquis at 50% (built by the backend) ---------- */
 /** " 도착 그림을 112%로 키우고 위치를 맞췄습니다" — how the server fitted the arrow's end onto its start */
 function fitNote(a) {
@@ -471,6 +575,8 @@ function clearSpawnPreview() {
 /* ---------- selection ---------- */
 function select(ids, additive) {
   if (!additive) selected.clear();
+  if (!ids.length && !additive) lastGroupKey = '';
+  if (selGroup) { selGroup = null; renderGroups(); }
   if (selLink) { selLink = null; renderLinks(); }
   for (const id of ids) selected.add(id);
   refreshSel();
@@ -502,7 +608,7 @@ vp.addEventListener('pointerdown', e => {
 
   const target = e.target;
   const itemEl = target.closest && target.closest('.item');
-  const isTouch = e.pointerType === 'touch' || e.pointerType === 'pen';
+  const isTouch = e.pointerType === 'touch';
 
   if (e.button === 1 || spaceDown || (!itemEl && isTouch)) {
     mode = 'pan'; drag = { sx: e.clientX, sy: e.clientY, cx: cam.x, cy: cam.y };
@@ -517,6 +623,12 @@ vp.addEventListener('pointerdown', e => {
     mode = 'spawn';
     drag = { src, side: knob.dataset.k, sx: e.clientX, sy: e.clientY, moved: false };
     e.preventDefault(); return;
+  }
+  const grpEl = target.closest && target.closest('.bubbles, #links g[data-gid]');
+  if (grpEl) {
+    selected.clear(); refreshSel();
+    selGroup = grpEl.dataset.gid; renderGroups();
+    mode = null; return;
   }
   const linkG = target.closest && target.closest('#links g[data-id]');
   if (linkG) {
@@ -566,11 +678,13 @@ vp.addEventListener('pointerdown', e => {
     return;
   }
 
-  // empty space: marquee select
+  // empty space: lasso — draw around items to select them (two or more overlays get grouped)
   if (!e.shiftKey) select([]);
   mode = 'marquee';
-  drag = { sx: e.clientX, sy: e.clientY, base: new Set(selected) };
-  marqueeEl = document.createElement('div'); marqueeEl.id = 'marquee'; vp.appendChild(marqueeEl);
+  drag = { pts: [[e.clientX, e.clientY]], base: new Set(selected) };
+  marqueeEl = document.createElementNS(SVGNS, 'svg'); marqueeEl.id = 'marquee';
+  marqueeEl.appendChild(document.createElementNS(SVGNS, 'polygon'));
+  vp.appendChild(marqueeEl);
   updateMarquee(e.clientX, e.clientY);
 });
 
@@ -665,9 +779,11 @@ function endPointer(e) {
       else spawnFrame(drag.src, drag.side);
     }
   }
+  const lassoed = mode === 'marquee' && e.type === 'pointerup';
   if (marqueeEl) { marqueeEl.remove(); marqueeEl = null; }
   vp.classList.remove('panning');
   mode = null; drag = null;
+  if (lassoed) groupSelectedOverlays();
 }
 vp.addEventListener('pointerup', endPointer);
 vp.addEventListener('pointercancel', endPointer);
@@ -684,14 +800,26 @@ vp.addEventListener('contextmenu', e => {
   scheduleSave();
 });
 
+function insidePolygon(px, py, pts) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [xi, yi] = pts[i], [xj, yj] = pts[j];
+    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
 function updateMarquee(x, y) {
-  const l = Math.min(x, drag.sx), t = Math.min(y, drag.sy), r = Math.max(x, drag.sx), b = Math.max(y, drag.sy);
-  Object.assign(marqueeEl.style, { left: l + 'px', top: t + 'px', width: (r - l) + 'px', height: (b - t) + 'px' });
-  if (r - l < 3 && b - t < 3) return;
-  const A = toWorld(l, t), B = toWorld(r, b);
+  const last = drag.pts[drag.pts.length - 1];
+  if (Math.hypot(x - last[0], y - last[1]) > 3) drag.pts.push([x, y]);
+  marqueeEl.firstChild.setAttribute('points', drag.pts.map(p => p.join(',')).join(' '));
+  if (drag.pts.length < 3) return;
   selected.clear();
   for (const id of drag.base) selected.add(id);
-  for (const it of items) if (it.x < B.x && it.x + it.w > A.x && it.y < B.y && it.y + it.h > A.y) selected.add(it.id);
+  // an item is lassoed when its centre is inside the loop
+  for (const it of items) {
+    const cx = (it.x + it.w / 2) * cam.z + cam.x, cy = (it.y + it.h / 2) * cam.z + cam.y;
+    if (insidePolygon(cx, cy, drag.pts)) selected.add(it.id);
+  }
   refreshSel();
 }
 
@@ -813,7 +941,10 @@ window.addEventListener('keydown', e => {
     scheduleSave(); e.preventDefault();
   }
 });
-window.addEventListener('keyup', e => { if (e.code === 'Space') { spaceDown = false; vp.classList.remove('space'); } });
+window.addEventListener('keyup', e => {
+  if (e.code === 'Space') { spaceDown = false; vp.classList.remove('space'); }
+  if (e.key === 'Shift') groupSelectedOverlays();
+});
 window.addEventListener('blur', () => { spaceDown = false; vp.classList.remove('space'); });
 
 /* ---------- paste ---------- */
@@ -1178,6 +1309,7 @@ function scheduleReview(it) {
     try {
       await flushSave(); // the server reads the strokes it has stored
       const r = await api.review(it.id);
+      if (r.groups && r.groups.length) { for (const g of r.groups) upsertGroup(g); renderGroups(); }
       if (!r.skipped && !r.cleared) toast(`교정 내용을 기록했습니다 (${r.rows.length}건)`, 1800);
     } catch (err) {
       toast(`교정 기록을 남기지 못했습니다: ${err.message}`, 4000);
@@ -1362,6 +1494,7 @@ async function seedExamples() {
       items.push(it); makeEl(it);
     }
     links = data.links.filter(l => byId(l.from) && byId(l.to));
+    groups = (data.groups || []).filter(g => g.members.filter(byId).length >= 2);
     if (data.camera) Object.assign(cam, data.camera);
     applyCam();
     for (const it of items) markSent(it);

@@ -19,6 +19,7 @@ const { board, persist, flushNow, imageUrl, collectGarbage, UPLOAD_DIR } = await
 const { composeOverlay, hasContent } = await import('./compose.js');
 const { aiEnabled, aiConfig, processedImage } = await import('./ai.js');
 const { reviewItem, allRows, toCsv } = await import('./review.js');
+const { createGroup, computeGroup, groupsWith, forgetMember } = await import('./groups.js');
 
 const PORT = Number(process.env.PORT) || 3000;
 const FRONTEND_DIR = path.resolve(import.meta.dirname, '..', 'frontend');
@@ -99,6 +100,7 @@ api.get('/board', (req, res) => {
     camera: board.camera,
     items: Object.values(board.items).map(withUrl),
     links: Object.values(board.links),
+    groups: Object.values(board.groups || {}),
   });
 });
 
@@ -144,6 +146,7 @@ api.put('/items/:id', (req, res) => {
 api.delete('/items/:id', (req, res) => {
   const id = req.params.id;
   delete board.items[id];
+  forgetMember(id);
   for (const [lid, l] of Object.entries(board.links)) {
     if (l.from === id || l.to === id) delete board.links[lid];
     else if (l.overlay === id) delete l.overlay;
@@ -251,9 +254,28 @@ api.post('/items/:id/review', async (req, res) => {
   const it = board.items[req.params.id];
   if (!it) return res.status(404).json({ error: '항목을 찾을 수 없습니다' });
   if (!aiEnabled()) return res.json({ rows: [], skipped: true, reason: 'no-key' });
-  try { res.json(await reviewItem(it)); }
+  try {
+    const result = await reviewItem(it);
+    // groups this canvas belongs to compare its log too: bring their common features up to date
+    const groups = result.skipped ? [] : await Promise.all(groupsWith(it.id).map(g => computeGroup(g).catch(() => g)));
+    res.json({ ...result, groups });
+  }
   catch (err) { console.error('[review]', err.message); res.status(502).json({ error: err.message }); }
 });
+// Groups of overlays: bracket + circles with the features their correction logs share.
+api.post('/groups', async (req, res) => {
+  const ids = Array.isArray(req.body?.members) ? req.body.members.filter(id => ID.test(id) && board.items[id]) : [];
+  if (ids.length < 2) return res.status(400).json({ error: '두 개 이상의 겹쳐 보기를 묶어야 합니다' });
+  const g = createGroup(ids);
+  try { res.json(await computeGroup(g)); }
+  catch (err) { console.error('[groups]', err.message); res.status(502).json({ error: err.message, group: g }); }
+});
+api.delete('/groups/:id', (req, res) => {
+  if (board.groups) delete board.groups[req.params.id];
+  persist();
+  res.status(204).end();
+});
+
 // The whole log as JSON or as a spreadsheet-friendly CSV.
 api.get('/reviews', (req, res) => res.json({ rows: allRows() }));
 api.get('/reviews.csv', (req, res) => {
