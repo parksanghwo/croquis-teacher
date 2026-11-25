@@ -42,36 +42,50 @@ async function responses(body, timeoutMs) {
 const outputText = data => (data.output || []).flatMap(o => o.content || []).filter(c => c.type === 'output_text').map(c => c.text).join('') || data.output_text || '';
 const citedUrls = data => (data.output || []).flatMap(o => o.content || []).flatMap(c => c.annotations || []).filter(a => a.type === 'url_citation').map(a => a.url);
 
+export const PIN_PROMPT = `첨부한 표의 ‘다음 연습 사진의 조건’을 읽고, 각 공통 오류 패턴을 연습하기 좋은 실사 사진을 핀터레스트에서 찾아주세요.
+
+- 머리부터 양발 끝까지 화면 안에 들어온 선명한 전신 사진을 고르세요. 확대했을 때 인물의 윤곽과 연습할 부위를 뚜렷하게 볼 수 있어야 합니다.
+- 각 사진이 해당 행의 연습 조건을 충족하는지 직접 확인하세요. 예를 들어 ‘팔과 몸통 사이 간격’이 연습 대상이면 팔과 옆구리 사이의 여백이 잘 보이는 사진을 고르세요.
+- 사진마다 어떤 부분을 보고 연습하면 되는지 한 문장으로 적고, 해당 사진을 바로 열 수 있는 개별 핀 링크를 제공하세요. 검색 결과나 보드 링크는 제외하세요.`;
+
 const PIN_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['pins'],
-  properties: { pins: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['url'], properties: { url: { type: 'string' } } } } },
+  properties: {
+    pins: {
+      type: 'array',
+      items: {
+        type: 'object', additionalProperties: false, required: ['url', 'note'],
+        properties: {
+          url: { type: 'string', description: '개별 핀 링크 (주소에 /pin/이 들어간 핀 페이지)' },
+          note: { type: 'string', description: '이 사진에서 어떤 부분을 보고 연습하면 되는지 한 문장' },
+        },
+      },
+    },
+  },
 };
 
-/** Step 1: pin page addresses from a web search limited to Pinterest. */
+/** Step 1: pin pages (with a one-line practice note each) from a web search limited to Pinterest. */
 async function searchPinPages(feature) {
-  const prompt = `다음 크로키 연습에 쓸 참고 사진을 Pinterest에서 찾으세요.
-연습 사진 조건: ${feature.practice || feature.name}
-고치려는 습관: ${feature.name}
-
-- pinterest.com의 핀 페이지(주소에 /pin/이 들어간 페이지)만 고르세요.
-- 사람의 실사 사진으로, 조건의 포즈나 부위가 잘 보이는 핀을 고르세요. 그림·일러스트, 여러 장을 이어 붙인 이미지, 글자가 많은 이미지, 광고는 빼세요.
-- 서로 다른 핀으로 8개까지, 실제 검색 결과에 나온 주소만 적으세요.`;
+  const table = `| 공통 오류 패턴 | 다음 연습 사진의 조건 |\n|---|---|\n| ${feature.name} | ${feature.practice || feature.name} |`;
   const data = await responses({
     model: textModel(),
     tools: [{ type: 'web_search', filters: { allowed_domains: ['pinterest.com'] } }],
-    input: prompt,
+    // the user's prompt as written, the table it refers to, and how many candidates to send
+    // (a few are dropped later when the photos are checked)
+    input: `${PIN_PROMPT}\n\n${table}\n\n후보 핀은 서로 다른 것으로 8개까지 주세요.`,
     text: { format: { type: 'json_schema', name: 'pinterest_pins', schema: PIN_SCHEMA, strict: true } },
   }, 180_000);
-  let listed = [];
-  try { listed = JSON.parse(outputText(data)).pins.map(p => p.url); } catch {}
-  const urls = [...new Set([...listed, ...citedUrls(data)])]
-    .map(u => u.replace(/[?#].*$/, ''))
-    .filter(u => allowedUrl(u) && /\/pin\//.test(u));
-  return [...new Set(urls)].slice(0, 8);
+  const notes = new Map();
+  try {
+    for (const p of JSON.parse(outputText(data)).pins) notes.set(p.url.replace(/[?#].*$/, ''), String(p.note || '').slice(0, 200));
+  } catch {}
+  const urls = [...new Set([...notes.keys(), ...citedUrls(data).map(u => u.replace(/[?#].*$/, ''))])]
+    .filter(u => allowedUrl(u) && /\/pin\//.test(u));   // individual pins only: no search or board links
+  return urls.slice(0, 8).map(url => ({ url, note: notes.get(url) || '' }));
 }
 
 /** Step 2: the pin's preview image (og:image), downloaded and checked. */
-async function pinImage(pageUrl) {
+async function pinImage({ url: pageUrl, note }) {
   const page = await fetch(pageUrl, { headers: { 'User-Agent': BROWSER_UA, 'Accept-Language': 'ko,en;q=0.8' }, redirect: 'follow', signal: AbortSignal.timeout(15_000) });
   if (!page.ok || !allowedUrl(page.url)) throw new Error(`핀 페이지 ${page.status}`);
   const html = (await page.text()).slice(0, 2_000_000);
@@ -90,14 +104,18 @@ async function pinImage(pageUrl) {
   if (buf.length > MAX_IMAGE) throw new Error('이미지가 너무 큽니다');
   const m = await sharp(buf).metadata();
   if (!m.width || Math.min(m.width, m.height) < 250) throw new Error('이미지가 너무 작습니다');
-  return { pageUrl, buf, width: m.width, height: m.height, format: m.format };
+  return { pageUrl, note, buf, width: m.width, height: m.height, format: m.format };
 }
 
 /** Step 3: which candidates fit the condition (indices). Falls back to all on failure. */
 async function keepFitting(feature, cands) {
   try {
-    const content = [{ type: 'input_text', text: `다음 크로키 연습 사진 조건에 맞는 사진의 번호를 고르세요. 사람의 실사 사진이어야 하고, 조건의 포즈나 부위가 잘 보여야 합니다. 그림, 여러 장을 이어 붙인 이미지, 글자가 많은 이미지는 빼세요.
-조건: ${feature.practice || feature.name}` }];
+    const content = [{ type: 'input_text', text: `아래 사진들 가운데 크로키 연습에 쓸 수 있는 사진의 번호를 고르세요.
+- 머리부터 양발 끝까지 화면 안에 들어온 선명한 전신 실사 사진이어야 합니다. 확대했을 때 인물의 윤곽과 연습할 부위를 뚜렷하게 볼 수 있어야 합니다.
+- 다음 연습 조건을 충족하는지 사진을 직접 보고 확인하세요. 예를 들어 ‘팔과 몸통 사이 간격’이 연습 대상이면 팔과 옆구리 사이의 여백이 잘 보여야 합니다.
+- 그림, 여러 장을 이어 붙인 이미지, 글자가 많은 이미지는 빼세요.
+공통 오류 패턴: ${feature.name}
+다음 연습 사진의 조건: ${feature.practice || feature.name}` }];
     for (const [i, c] of cands.entries()) {
       const small = await sharp(c.buf).rotate().resize({ width: 512, height: 512, fit: 'inside' }).jpeg({ quality: 80 }).toBuffer();
       content.push({ type: 'input_text', text: `${i + 1}번` }, { type: 'input_image', image_url: `data:image/jpeg;base64,${small.toString('base64')}`, detail: 'low' });
@@ -121,8 +139,8 @@ async function saveImage(c) {
   const file = `${id}.${ext}`;
   await fs.promises.writeFile(path.join(UPLOAD_DIR, file), c.buf);
   const pin = c.pageUrl.match(/\/pin\/([^/]+)/)?.[1];
-  board.images[id] = { file, width: c.width, height: c.height, bytes: c.buf.length, createdAt: new Date().toISOString(), name: `pinterest-${pin || id.slice(0, 8)}`, source: c.pageUrl };
-  return { id, url: imageUrl(id), width: c.width, height: c.height, source: c.pageUrl };
+  board.images[id] = { file, width: c.width, height: c.height, bytes: c.buf.length, createdAt: new Date().toISOString(), name: `pinterest-${pin || id.slice(0, 8)}`, source: c.pageUrl, note: c.note };
+  return { id, url: imageUrl(id), width: c.width, height: c.height, source: c.pageUrl, note: c.note };
 }
 
 /** Up to `count` Pinterest photos for a feature → [{ id, url, width, height, source }]. */

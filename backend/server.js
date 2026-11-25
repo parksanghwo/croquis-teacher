@@ -71,6 +71,7 @@ function cleanItem(id, body) {
   if (body.example) it.example = true;
   if (body.refOff) it.refOff = true;
   if (typeof body.source === 'string' && /^https?:\/\//.test(body.source)) it.source = body.source.slice(0, 500);
+  if (typeof body.note === 'string' && body.note) it.note = body.note.slice(0, 200);
   if (body.compare) it.compare = true;
   const strokes = cleanStrokes(body.strokes);
   if (strokes) it.strokes = strokes;

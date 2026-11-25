@@ -239,3 +239,8 @@ body{background:var(--bg);color:var(--ink);font-family:var(--f-ui);overscroll-be
 .bcell.searching .bubble{border-style:dashed;border-color:var(--accent);animation:pinsearch 1.2s ease-in-out infinite}
 @keyframes pinsearch{50%{opacity:.55}}
 @media (prefers-reduced-motion:reduce){.bcell.searching .bubble{animation:none}}
+
+/* under a Pinterest photo: what to study in it; tapping opens the pin */
+.pin-note{position:absolute;left:0;right:0;top:100%;line-height:1.4;
+  color:var(--muted);text-decoration:none;text-align:center;word-break:keep-all;overflow-wrap:anywhere;cursor:pointer}
+.pin-note:hover{color:var(--accent);text-decoration:underline}

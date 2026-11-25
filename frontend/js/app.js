@@ -70,6 +70,12 @@ function makeEl(it) {
   el.className = 'item';
   el.dataset.id = it.id;
   fillContent(it, el);
+  if (it.source && /^https?:\/\//.test(it.source)) {
+    const a = document.createElement('a');
+    a.className = 'pin-note'; a.href = it.source; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    a.textContent = it.note || '핀 열기';   // model text: set as text, never markup
+    el.appendChild(a);
+  }
   const tagText = it.example ? '예시 이미지 · 지워도 됩니다' : it.label;
   if (tagText) { const t = document.createElement('span'); t.className = 'tag'; t.textContent = tagText; el.appendChild(t); }
   for (const k of ['nw', 'ne', 'sw', 'se']) { const h = document.createElement('div'); h.className = 'h ' + k; h.dataset.h = k; el.appendChild(h); }
@@ -135,6 +141,11 @@ function layout(it) {
   s.left = it.x + 'px'; s.top = it.y + 'px'; s.width = it.w + 'px'; s.height = it.h + 'px'; s.zIndex = it.order;
   it.el.classList.toggle('cover', !!it.cover);
   it.el.classList.toggle('ref-off', !!it.refOff);
+  const pinNote = it.el.querySelector(':scope > a.pin-note');
+  if (pinNote) { // sized with the photo, so it stays in its slot at any zoom
+    pinNote.style.fontSize = Math.max(8, it.w * 0.05) + 'px';
+    pinNote.style.marginTop = it.w * 0.03 + 'px';
+  }
   const lb = it.layers && it.el.querySelector('img.layer-b');
   const img = !it.layers && it.el.querySelector('img');
   if (lb) {
@@ -392,7 +403,8 @@ async function searchPinsFor(fid) {
     const right = Math.max(node.x + node.w, ...cells.map(c => parseFloat(c.style.left) + c.offsetWidth));
     const m = byId(g.members[0]);
     const cw = m ? m.w : 345, ch = m ? m.h : 450, gap = 40;
-    const n = photos.length, gw = Math.min(2, n) * cw + (n > 1 ? gap : 0), gh = Math.ceil(n / 2) * ch + (n > 2 ? gap : 0);
+    const rowGap = Math.max(gap, cw * 0.32); // room for the caption under each photo (about 4 lines)
+    const n = photos.length, gw = Math.min(2, n) * cw + (n > 1 ? gap : 0), gh = Math.ceil(n / 2) * (ch + rowGap);
     // start level with the circle, then step right until the grid clears everything on the board
     let x0 = right + GAP * 1.5;
     const y0 = node.y;
@@ -401,8 +413,8 @@ async function searchPinsFor(fid) {
     photos.forEach((ph, i) => {
       const s = Math.min(cw / ph.width, ch / ph.height);
       const w = ph.width * s, h = ph.height * s;
-      const cx = x0 + (i % 2) * (cw + gap) + cw / 2, cy = y0 + Math.floor(i / 2) * (ch + gap) + ch / 2;
-      const it = { id: uid(), x: cx - w / 2, y: cy - h / 2, w, h, order: ++orderCounter, image: ph.id, url: ph.url, source: ph.source };
+      const cx = x0 + (i % 2) * (cw + gap) + cw / 2, cy = y0 + Math.floor(i / 2) * (ch + rowGap) + ch / 2;
+      const it = { id: uid(), x: cx - w / 2, y: cy - h / 2, w, h, order: ++orderCounter, image: ph.id, url: ph.url, source: ph.source, note: ph.note || '' };
       items.push(it); makeEl(it);
       links.push({ id: uid(), from: fid, to: it.id, side: 'e' });
     });
@@ -693,6 +705,8 @@ vp.addEventListener('pointerdown', e => {
   if (pointers.size > 2) return;
 
   const target = e.target;
+  const pinLink = target.closest && target.closest('a.pin-note');
+  if (pinLink && e.button === 0) { window.open(pinLink.href, '_blank', 'noopener'); pointers.delete(e.pointerId); return; }
   const itemEl = target.closest && target.closest('.item');
   const isTouch = e.pointerType === 'touch';
 
@@ -1386,6 +1400,7 @@ function inkPoint(it, e) {
   return [Math.round(((w.x - it.x) / it.w) * 1e4) / 1e4, Math.round(((w.y - it.y) / it.w) * 1e4) / 1e4, Math.round(p * 100) / 100];
 }
 function startInk(e) {
+  if (e.target.closest && e.target.closest('a.pin-note')) return false; // a pin link, not a drawing surface
   const it = itemAt(e.clientX, e.clientY);
   if (!it) return false;
   penSeen = true;
@@ -1501,7 +1516,7 @@ let sentCam = '';
 const itemJSON = it => JSON.stringify({
   id: it.id, x: it.x, y: it.y, w: it.w, h: it.h, order: it.order, image: it.image || null,
   cover: !!it.cover, pos: it.pos || null, zoom: it.zoom || null, label: it.label || null,
-  example: !!it.example, strokes: it.strokes || null, layers: it.layers || null, fit: it.fit || null, refOff: !!it.refOff, compare: !!it.compare, source: it.source || null,
+  example: !!it.example, strokes: it.strokes || null, layers: it.layers || null, fit: it.fit || null, refOff: !!it.refOff, compare: !!it.compare, source: it.source || null, note: it.note || null,
 });
 const linkJSON = l => JSON.stringify({ id: l.id, from: l.from, to: l.to, side: l.side, overlay: l.overlay || null });
 const camJSON = () => JSON.stringify({ x: cam.x, y: cam.y, z: cam.z });
