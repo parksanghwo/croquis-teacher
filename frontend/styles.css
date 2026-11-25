@@ -191,7 +191,8 @@ body{background:var(--bg);color:var(--ink);font-family:var(--f-ui);overscroll-be
 
 #penSize{position:fixed;left:max(24px,calc(env(safe-area-inset-left,0px) + 24px));bottom:calc(env(safe-area-inset-bottom,0px) + 24px);
   display:flex;align-items:center;gap:14px;z-index:6}
-.taper{position:relative;width:min(240px,50vw);height:36px;display:flex;align-items:center}
+.taper{position:relative;width:min(260px,50vw);height:56px;display:flex;align-items:center;touch-action:none;cursor:pointer}
+#penRange{pointer-events:none} /* the bar handles touches itself; the range stays for keyboard and screen readers */
 .taper svg{position:absolute;left:0;right:0;top:50%;width:100%;height:14px;transform:translateY(-50%);fill:var(--dot);pointer-events:none}
 #penRange{position:relative;width:100%;height:36px;margin:0;background:transparent;-webkit-appearance:none;appearance:none;touch-action:none;cursor:pointer}
 #penRange::-webkit-slider-runnable-track{height:36px;background:transparent}

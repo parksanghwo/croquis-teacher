@@ -1337,7 +1337,17 @@ function redoDraw() { if (!dRedo.length) return; dUndo.push(dStrokes); dStrokes 
 undoBtn.onclick = undoDraw; redoBtn.onclick = redoDraw;
 document.getElementById('clearBtn').onclick = () => { if (!dStrokes.length) return; dUndo.push(dStrokes); dStrokes = []; dRedo = []; syncUndo(); redrawPaper(); toast('모두 지웠습니다. 실행 취소로 되돌릴 수 있습니다'); };
 document.getElementById('doneBtn').onclick = closeDrawer;
-drawer.addEventListener('pointerdown', e => { if (e.target === drawer) closeDrawer(); });
+// back to the board: two quick taps (or a double-click) on the empty area around the paper.
+// A single touch there does nothing, so a slightly missed button never closes the canvas.
+const backdropTap = { t: 0, x: 0, y: 0 };
+drawer.addEventListener('pointerdown', e => {
+  if (e.target !== drawer) return;
+  const now = performance.now();
+  if (backdropTap.t && now - backdropTap.t < 400 && Math.hypot(e.clientX - backdropTap.x, e.clientY - backdropTap.y) < 50) {
+    backdropTap.t = 0; closeDrawer(); return;
+  }
+  Object.assign(backdropTap, { t: now, x: e.clientX, y: e.clientY });
+});
 drawer.addEventListener('wheel', e => e.preventDefault(), { passive: false });
 const relayoutPaper = () => { if (!drawer.hidden && dItem && !dCur) layoutPaper(); };
 window.addEventListener('resize', relayoutPaper);
@@ -1619,6 +1629,23 @@ cmpBtn.onclick = async () => {
 const penRange = document.getElementById('penRange'), penVal = document.getElementById('penVal');
 function showPen() { penRange.value = String(penSize * 1000); penVal.textContent = (penSize * 1000).toFixed(1); }
 penRange.addEventListener('input', () => setPen(Math.round(parseFloat(penRange.value) * 10) / 10000));
+// Touch / Pencil / mouse anywhere along the tapered bar sets the width and can be dragged
+// (Safari's own range thumb is small and unreliable on iPad).
+const taper = penSizeEl.querySelector('.taper');
+function penFromPointer(e) {
+  const r = taper.getBoundingClientRect();
+  const t = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+  const min = +penRange.min, max = +penRange.max;
+  setPen(Math.round((min + t * (max - min)) * 10) / 10000);
+}
+taper.addEventListener('pointerdown', e => {
+  e.preventDefault(); e.stopPropagation();
+  try { taper.setPointerCapture(e.pointerId); } catch {}
+  taper.dataset.dragging = '1';
+  penFromPointer(e);
+});
+taper.addEventListener('pointermove', e => { if (taper.dataset.dragging) { e.preventDefault(); penFromPointer(e); } });
+for (const t of ['pointerup', 'pointercancel']) taper.addEventListener(t, () => { delete taper.dataset.dragging; });
 showPen();
 
 /* ---------- persistence: sync changes to the backend ---------- */
