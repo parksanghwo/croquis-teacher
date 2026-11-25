@@ -434,6 +434,7 @@ async function makeOverlay(l, silent) {
                    : '원본을 겹쳤습니다(사진 30%, 크로키 50%). 서버에 OpenAI API 키가 없어 선화 추출은 건너뛰었습니다', res.ai ? 3600 : 5000);
     }
     l.overlay = res.link.overlay;
+    syncEye();
     markSent(it, l); // the server already has this state
   } catch (err) {
     if (!silent) toast(err.message, 6000);
@@ -493,6 +494,7 @@ let spaceDown = false;
 let marqueeEl = null;
 
 vp.addEventListener('pointerdown', e => {
+  if (e.pointerType === 'pen' && !ink && startInk(e)) return; // Apple Pencil draws
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   vp.setPointerCapture(e.pointerId);
 
@@ -501,7 +503,7 @@ vp.addEventListener('pointerdown', e => {
 
   const target = e.target;
   const itemEl = target.closest && target.closest('.item');
-  const isTouch = e.pointerType === 'touch';
+  const isTouch = e.pointerType === 'touch' || e.pointerType === 'pen';
 
   if (e.button === 1 || spaceDown || (!itemEl && isTouch)) {
     mode = 'pan'; drag = { sx: e.clientX, sy: e.clientY, cx: cam.x, cy: cam.y };
@@ -574,6 +576,7 @@ vp.addEventListener('pointerdown', e => {
 });
 
 vp.addEventListener('pointermove', e => {
+  if (ink && e.pointerId === ink.pid) { moveInk(e); return; }
   if (!pointers.has(e.pointerId)) return;
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (mode === 'pinch') { movePinch(); return; }
@@ -644,6 +647,7 @@ vp.addEventListener('pointermove', e => {
 });
 
 function endPointer(e) {
+  if (ink && e.pointerId === ink.pid) { endInk(); return; }
   pointers.delete(e.pointerId);
   if (mode === 'pinch') {
     if (pointers.size < 2) { mode = null; drag = null; }
@@ -676,7 +680,7 @@ vp.addEventListener('contextmenu', e => {
   e.preventDefault();
   if (!it.layers) { upgradeOverlay(it); return; }
   it.refOff = !it.refOff;
-  layout(it);
+  layout(it); syncEye();
   toast(it.refOff ? '사진 선화를 숨겼습니다. 다시 오른쪽 클릭하면 보입니다' : '사진 선화를 다시 표시합니다');
   scheduleSave();
 });
@@ -794,6 +798,8 @@ window.addEventListener('keydown', e => {
   if (e.code === 'Space') { if (!spaceDown) { spaceDown = true; vp.classList.add('space'); } e.preventDefault(); return; }
   if (e.key === 'Delete' || e.key === 'Backspace') { removeSelected(); e.preventDefault(); return; }
   if (e.key === 'Escape') { select([]); return; }
+  if (mod && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) { inkRedoStep(); e.preventDefault(); return; }
+  if (mod && e.key.toLowerCase() === 'z') { inkUndoStep(); e.preventDefault(); return; }
   if (mod && e.key.toLowerCase() === 'a') { select(items.map(i => i.id)); e.preventDefault(); return; }
   if (mod && e.key.toLowerCase() === 'd') { duplicateSelected(); e.preventDefault(); return; }
   if (e.shiftKey && (e.code === 'Digit1')) { fitAll(); e.preventDefault(); return; }
@@ -900,6 +906,7 @@ function rectTransform(r) { // transform that maps the full paper onto rect r (s
 function syncUndo() { undoBtn.disabled = !dUndo.length; redoBtn.disabled = !dRedo.length; }
 function setPen(v) {
   penSize = v;
+  if (typeof showPen === 'function') try { showPen(); } catch {}
   drawer.querySelectorAll('[data-size]').forEach(b => b.setAttribute('aria-pressed', String(parseFloat(b.dataset.size) === v)));
   try { localStorage.setItem('ic-pen', String(v)); } catch {}
 }
@@ -932,6 +939,7 @@ async function layeredPreview(it) {
 }
 function openDrawer(it) {
   dItem = it; dStrokes = (it.strokes || []).slice(); dUndo = []; dRedo = []; dCur = null; dPointer = null;
+  it._drawBefore = dStrokes.slice();
   // photos (the overlay) get a red pen drawn over the image; empty frames get black on white
   dColor = it.image ? RED : '#111';
   drawer.style.setProperty('--pen', dColor);
@@ -955,7 +963,7 @@ function closeDrawer() {
   const it = dItem;
   const changed = JSON.stringify(it.strokes || []) !== JSON.stringify(dStrokes);
   if (dStrokes.length) it.strokes = dStrokes; else delete it.strokes;
-  if (changed) { fillContent(it, it.el); refreshOverlaysFor(it.id); scheduleSave(); }
+  if (changed) { fillContent(it, it.el); refreshOverlaysFor(it.id); scheduleSave(); recordStrokes(it, it._drawBefore || []); }
   const finish = () => { drawer.hidden = true; paper.style.transform = 'none'; dItem = null; };
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return finish();
   drawer.classList.add('enter');
@@ -1070,6 +1078,138 @@ function toast(msg, ms = 2200) {
 /* what the server can do (AI line extraction on or off) */
 const serverConfig = { ai: false, imageModel: '' };
 api.config().then(c => Object.assign(serverConfig, c)).catch(() => {});
+
+/* ---------- Apple Pencil on the board, finger taps, minimal controls ---------- */
+// The Pencil draws straight onto whatever it touches: red markup on photos and overlays,
+// black on empty frames. Fingers never draw (they move, pan and pinch), which also keeps
+// a resting palm from leaving marks.
+let ink = null;                       // the stroke being drawn: { pid, it, before, cur, c, g }
+const inkUndo = [], inkRedo = [];     // board-wide pen history: { id, before, after }
+const undoEl = document.getElementById('inkUndo'), redoEl = document.getElementById('inkRedo');
+function syncInkButtons() { undoEl.disabled = !inkUndo.length; redoEl.disabled = !inkRedo.length; }
+function recordStrokes(it, before) {
+  inkUndo.push({ id: it.id, before, after: (it.strokes || []).slice() });
+  if (inkUndo.length > 300) inkUndo.shift();
+  inkRedo.length = 0;
+  syncInkButtons();
+}
+function applyStrokes(it, list) {
+  if (list.length) it.strokes = list.slice(); else delete it.strokes;
+  fillContent(it, it.el); layout(it);
+  refreshOverlaysFor(it.id);
+  scheduleSave();
+}
+function inkUndoStep() {
+  const e = inkUndo.pop();
+  if (!e) { toast('되돌릴 펜 선이 없습니다', 1200); return; }
+  const it = byId(e.id); if (it) applyStrokes(it, e.before);
+  inkRedo.push(e); syncInkButtons();
+}
+function inkRedoStep() {
+  const e = inkRedo.pop();
+  if (!e) { toast('다시 실행할 펜 선이 없습니다', 1200); return; }
+  const it = byId(e.id); if (it) applyStrokes(it, e.after);
+  inkUndo.push(e); syncInkButtons();
+}
+undoEl.onclick = () => (drawer.hidden ? inkUndoStep() : undoDraw());
+redoEl.onclick = () => (drawer.hidden ? inkRedoStep() : redoDraw());
+
+/** The canvas inside an item that shows its strokes (made on the first stroke). */
+function inkSurface(it) {
+  const host = it.el.querySelector('.clip, .frame-box');
+  let c = host.querySelector(':scope > canvas');
+  if (!c) {
+    c = document.createElement('canvas');
+    const long = 1600, r = it.h / it.w;
+    c.width = r <= 1 ? long : Math.round(long / r); c.height = Math.round(c.width * r);
+    host.appendChild(c);
+  }
+  if (host.classList.contains('frame-box')) host.classList.add('drawn');
+  return c;
+}
+function inkPoint(it, e) {
+  const w = toWorld(e.clientX, e.clientY);
+  const p = 0.35 + (e.pressure || 0.5) * 1.3;
+  return [Math.round(((w.x - it.x) / it.w) * 1e4) / 1e4, Math.round(((w.y - it.y) / it.w) * 1e4) / 1e4, Math.round(p * 100) / 100];
+}
+function startInk(e) {
+  const it = itemAt(e.clientX, e.clientY);
+  if (!it) return false;
+  penSeen = true;
+  try { vp.setPointerCapture(e.pointerId); } catch {}
+  const c = inkSurface(it), g = c.getContext('2d');
+  const cur = { w: penSize, pts: [inkPoint(it, e)] };
+  if (it.image) cur.c = RED;
+  ink = { pid: e.pointerId, it, before: (it.strokes || []).slice(), cur, c, g };
+  g.save(); drawStroke(g, cur, c.width); g.restore();
+  e.preventDefault();
+  return true;
+}
+function moveInk(e) {
+  const { it, cur, c, g } = ink;
+  const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+  for (const ev of evs.length ? evs : [e]) {
+    const pt = inkPoint(it, ev), last = cur.pts[cur.pts.length - 1];
+    if (Math.abs(pt[0] - last[0]) + Math.abs(pt[1] - last[1]) < 0.0008) continue;
+    cur.pts.push(pt);
+    g.strokeStyle = cur.c || '#111'; g.lineCap = 'round';
+    strokeSeg(g, cur, last, pt, c.width);
+  }
+}
+function endInk() {
+  const { it, before, cur } = ink;
+  ink = null;
+  it.strokes = before.concat([cur]);
+  recordStrokes(it, before);
+  refreshOverlaysFor(it.id); // a drawing on an empty frame feeds the overlays it is part of
+  scheduleSave();
+}
+
+/* two-finger tap = undo, three-finger tap = redo (quick, without moving) */
+const taps = { active: new Map(), max: 0, t0: 0, moved: false };
+window.addEventListener('pointerdown', e => {
+  if (e.pointerType !== 'touch') return;
+  if (!taps.active.size) { taps.max = 0; taps.t0 = performance.now(); taps.moved = false; }
+  taps.active.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  taps.max = Math.max(taps.max, taps.active.size);
+}, true);
+window.addEventListener('pointermove', e => {
+  const s = taps.active.get(e.pointerId);
+  if (s && Math.hypot(e.clientX - s.x, e.clientY - s.y) > 14) taps.moved = true;
+}, true);
+const tapEnd = e => {
+  if (!taps.active.delete(e.pointerId) || taps.active.size) return;
+  if (taps.moved || performance.now() - taps.t0 > 350 || taps.max < 2) return;
+  if (!lb.hidden) return;
+  const undo = taps.max === 2;
+  if (!drawer.hidden) (undo ? undoDraw : redoDraw)();
+  else (undo ? inkUndoStep : inkRedoStep)();
+};
+window.addEventListener('pointerup', tapEnd, true);
+window.addEventListener('pointercancel', tapEnd, true);
+// keep Safari from zooming the page itself
+document.addEventListener('gesturestart', e => e.preventDefault());
+
+/* eye: show / hide the photo line art on every overlay */
+const eyeBtn = document.getElementById('eyeBtn');
+const layeredOverlays = () => items.filter(i => i.layers && isOverlay(i));
+function syncEye() {
+  const ovs = layeredOverlays();
+  eyeBtn.setAttribute('aria-pressed', String(!(ovs.length && ovs.every(o => o.refOff))));
+}
+eyeBtn.onclick = () => {
+  const ovs = layeredOverlays();
+  if (!ovs.length) { toast('겹쳐 보기가 아직 없습니다', 1500); return; }
+  const hide = !ovs.every(o => o.refOff);
+  for (const o of ovs) { o.refOff = hide; layout(o); }
+  syncEye(); scheduleSave();
+};
+
+/* pen width: the tapered slider (1–20) is the pen width in thousandths of the frame width */
+const penRange = document.getElementById('penRange'), penVal = document.getElementById('penVal');
+function showPen() { penRange.value = String(penSize * 1000); penVal.textContent = (penSize * 1000).toFixed(1); }
+penRange.addEventListener('input', () => setPen(Math.round(parseFloat(penRange.value) * 10) / 10000));
+showPen();
 
 /* ---------- persistence: sync changes to the backend ---------- */
 const saveEl = document.getElementById('saveState');
@@ -1212,6 +1352,7 @@ async function seedExamples() {
     fitAll();
   }
   ready = true;
+  syncEye();
   // overlays saved as one flat image (older version) are rebuilt as two layers
   for (const l of links) { const ov = l.overlay && byId(l.overlay); if (ov && ov.image && !ov.layers) makeOverlay(l, true); }
   scheduleSave();
