@@ -396,7 +396,9 @@ async function autoFrame(it) {
 /* ---------- Pinterest practice photos for a circle (double-click / double-tap) ---------- */
 const lastBubbleTap = { fid: null, t: 0 };
 const pinSearching = new Set();
-async function searchPinsFor(fid) {
+/** at: { x, y, frame } — put the photos there instead of beside the circles; `frame` is the
+ *  empty canvas an arrow from the circle just made, replaced by the photos once they come. */
+async function searchPinsFor(fid, at = null) {
   const node = bubbleNodes.get(fid);
   const g = node && groups.find(x => x.id === node.gid);
   const f = g && (g.features || []).find(x => fidOf(g, x) === fid);
@@ -412,8 +414,15 @@ async function searchPinsFor(fid) {
     const rowGap = Math.max(gap, cw * 0.32); // room for the caption under each photo (about 4 lines)
     const n = photos.length, gw = Math.min(2, n) * cw + (n > 1 ? gap : 0), gh = Math.ceil(n / 2) * (ch + rowGap);
     // start level with the circle, then step right until the grid clears everything on the board
-    let x0 = right + GAP * 1.5;
-    const y0 = node.y;
+    if (!photos.length) throw new Error('알맞은 사진을 찾지 못했습니다');
+    const frame = at && at.frame && byId(at.frame.id);
+    if (frame && !frame.image && !(frame.strokes || []).length) {   // still empty: the photos take its place
+      items = items.filter(o => o !== frame); frame.el.remove();
+      links = links.filter(l => l.to !== frame.id && l.from !== frame.id);
+      selected.delete(frame.id); refreshSel();
+    } else if (frame) frame.el.classList.remove('pin-wait');
+    let x0 = at ? at.x : right + GAP * 1.5;
+    const y0 = at ? at.y : node.y;
     const hits = x => items.some(o => o.x < x + gw + gap && o.x + o.w > x - gap && o.y < y0 + gh + gap && o.y + o.h > y0 - gap);
     for (let tries = 0; tries < 50 && hits(x0); tries++) x0 += cw + gap;
     photos.forEach((ph, i) => {
@@ -427,6 +436,7 @@ async function searchPinsFor(fid) {
     renderLinks(); scheduleSave();
   } catch (err) {
     toast(err.message);
+    if (at && at.frame && at.frame.el) at.frame.el.classList.remove('pin-wait'); // the empty canvas stays
   } finally {
     pinSearching.delete(fid); renderGroups();
   }
@@ -947,8 +957,16 @@ function endPointer(e) {
         if (drag.moved && tgt) {
           if (!links.some(l => l.from === drag.src.id && l.to === tgt.id)) links.push({ id: uid(), from: drag.src.id, to: tgt.id, side: drag.side });
           renderLinks(); scheduleSave();
-        } else if (drag.moved) { const c = toWorld(e.clientX, e.clientY); spawnFrame(drag.src, drag.side, c.x, c.y, drag.size); }
-        else spawnFrame(drag.src, drag.side, null, null, drag.size);
+        } else {
+          // on empty space (or a click on the knob): Pinterest practice photos for this circle
+          // come there; an empty canvas holds the spot meanwhile (and stays if none are found)
+          const c = drag.moved ? toWorld(e.clientX, e.clientY) : null;
+          const fr = spawnFrame(drag.src, drag.side, c && c.x, c && c.y, drag.size);
+          if (serverConfig.ai && !pinSearching.has(drag.src.id)) {
+            fr.el.classList.add('pin-wait');
+            searchPinsFor(drag.src.id, { x: fr.x, y: fr.y, frame: fr });
+          }
+        }
       }
       else if (drag.moved && tgt) connect(drag.src, drag.side, tgt);
       else if (drag.moved) { const c = toWorld(e.clientX, e.clientY); spawnFrame(drag.src, drag.side, c.x, c.y); }

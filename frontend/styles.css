@@ -262,3 +262,6 @@ body{background:var(--bg);color:var(--ink);font-family:var(--f-ui);overscroll-be
 #topControls #penSize #penVal{box-shadow:none;padding:4px 6px;min-width:40px}
 .bubbles .gnote{position:absolute;transform:translateY(-50%);color:var(--muted);line-height:1.35;white-space:normal;cursor:pointer}
 .bubbles.sel .gnote{color:var(--accent)}
+.item.pin-wait{outline:2px dashed var(--accent);outline-offset:4px;animation:pinwait 1s ease-in-out infinite alternate}
+@keyframes pinwait{from{opacity:.55}to{opacity:1}}
+@media (prefers-reduced-motion:reduce){.item.pin-wait{animation:none}}
