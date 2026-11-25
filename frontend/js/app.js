@@ -52,6 +52,11 @@ function zoomAt(sx, sy, factor) {
 }
 const center = () => ({ x: vp.clientWidth / 2, y: vp.clientHeight / 2 });
 
+/** Is any part of the item inside the window? */
+function onScreen(it) {
+  const x = it.x * cam.z + cam.x, y = it.y * cam.z + cam.y;
+  return x < vp.clientWidth && x + it.w * cam.z > 0 && y < vp.clientHeight && y + it.h * cam.z > 0;
+}
 function fitAll() {
   if (!items.length) { cam.x = center().x; cam.y = center().y; cam.z = 1; applyCam(); return; }
   let a = Infinity, b = Infinity, c = -Infinity, d = -Infinity;
@@ -745,11 +750,18 @@ vp.addEventListener('pointerdown', e => {
     lastBubbleTap.t = now;
     mode = null; return;
   }
-  // finger double-tap on an overlay: edit it (iPad)
-  if (isTouch && itemEl && pointers.size === 1) {
-    const now = performance.now(), tid = itemEl.dataset.id, tit = byId(tid);
-    if (lastItemTap.id === tid && now - lastItemTap.t < 350 && tit && isOverlay(tit) && tit.layers) { enterFocus(tit); lastItemTap.id = null; return; }
-    lastItemTap.id = tid; lastItemTap.t = now;
+  // finger double-tap (iPad): on empty board → show every canvas; on an overlay → full
+  // screen. Only a real tap counts as the first one (short, barely moving), so two quick
+  // pans or drags never trigger it.
+  if (isTouch && pointers.size === 1 && !(target.closest && target.closest('.bubbles, #links g'))) {
+    const now = performance.now(), tid = itemEl ? itemEl.dataset.id : '';
+    if (lastTap.t && now - lastTap.t < 350 && lastTap.id === tid && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 40) {
+      lastTap.t = 0;
+      const tit = tid && byId(tid);
+      if (!tid) { pointers.delete(e.pointerId); fitAll(); return; }
+      if (tit && isOverlay(tit) && tit.layers) { pointers.delete(e.pointerId); openDrawer(tit); return; }
+    }
+    tapStart = { pid: e.pointerId, id: tid, x: e.clientX, y: e.clientY, t: now };
   }
   if (e.button === 1 || spaceDown || (isTouch && (!itemEl || itemEl.dataset.id === focusId))) {
     mode = 'pan'; drag = { sx: e.clientX, sy: e.clientY, cx: cam.x, cy: cam.y };
@@ -902,6 +914,11 @@ vp.addEventListener('pointermove', e => {
 });
 
 function endPointer(e) {
+  if (tapStart && e.pointerId === tapStart.pid) {
+    const quick = performance.now() - tapStart.t < 280 && Math.hypot(e.clientX - tapStart.x, e.clientY - tapStart.y) < 12;
+    Object.assign(lastTap, quick && e.type === 'pointerup' ? { id: tapStart.id, t: performance.now(), x: e.clientX, y: e.clientY } : { t: 0 });
+    tapStart = null;
+  }
   if (ink && e.pointerId === ink.pid) { endInk(); return; }
   pointers.delete(e.pointerId);
   if (mode === 'pinch') {
@@ -1157,6 +1174,7 @@ vp.addEventListener('dblclick', e => {
     const itemEl = el.closest && el.closest('.item');
     if (itemEl) { it = byId(itemEl.dataset.id); break; }
   }
+  if (!it && !(e.target.closest && e.target.closest('.bubbles, #links g'))) { fitAll(); return; } // empty board: show everything
   if (it && isOverlay(it)) {
     if (!it.layers) { upgradeOverlay(it); return; }
     openDrawer(it); // fills the screen; the tools appear there
@@ -1513,7 +1531,8 @@ document.addEventListener('gesturestart', e => e.preventDefault());
 // do the eye, compare, undo/redo and pen width appear, acting on that canvas alone.
 // Pen width is the exception: once changed it stays for every canvas.
 let focusId = null; // (board-level edit mode was replaced by the full-screen canvas)
-const lastItemTap = { id: null, t: 0 };
+let tapStart = null;                       // the touch that may become a tap
+const lastTap = { id: '', t: 0, x: 0, y: 0 }; // the last completed tap
 const topControls = document.getElementById('topControls'), penSizeEl = document.getElementById('penSize');
 const eyeBtn = document.getElementById('eyeBtn'), cmpBtn = document.getElementById('cmpBtn');
 function enterFocus(it) { openDrawer(it); }
@@ -1695,6 +1714,9 @@ async function seedExamples() {
     for (const it of items) markSent(it);
     for (const l of links) markSent(null, l);
     sentCam = data.camera ? camJSON() : '';
+    // the saved view may come from a screen of another size (computer → iPad): if no canvas
+    // is in sight, show everything
+    if (items.length && !items.some(onScreen)) fitAll();
   } else {
     await seedExamples();
     fitAll();
