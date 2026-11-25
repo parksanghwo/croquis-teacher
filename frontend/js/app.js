@@ -395,41 +395,54 @@ function renderGroups() {
     }
     el.classList.toggle('sel', selGroup === g.id);
     el.classList.toggle('busy', !!g.pending);
-    // circles, zig-zagging down two columns like the sketch
+    // circles (a crop of where the feature shows) with their text underneath, in two
+    // zig-zag columns like the sketch; each column stacks on measured heights, so a caption
+    // never runs into the next circle
     let box = world.querySelector(`.bubbles[data-gid="${g.id}"]`);
     if (!box) { box = document.createElement('div'); box.className = 'bubbles'; box.dataset.gid = g.id; world.appendChild(box); }
     box.classList.toggle('sel', selGroup === g.id);
     const fs = g.features || [];
-    const sig = JSON.stringify(fs.map(f => [f.name, f.drawings.length, f.practice || '']));
+    const sig = JSON.stringify(fs.map(f => [f.name, f.drawings.length, f.practice || '', f.cropUrl || '']));
     if (box.dataset.sig !== sig) {
       box.dataset.sig = sig;
       box.innerHTML = '';
       for (const f of fs) {
-        const b = document.createElement('div');
-        b.className = 'bubble';
+        const cell = document.createElement('div'); cell.className = 'bcell';
+        const circle = document.createElement('div'); circle.className = 'bubble';
+        if (f.cropUrl) { const im = document.createElement('img'); im.src = f.cropUrl; im.alt = ''; im.draggable = false; circle.appendChild(im); }
+        const cap = document.createElement('div'); cap.className = 'bcap';
         // model text: set as text, never markup
-        const name = document.createElement('span'); name.className = 'bubble-name'; name.textContent = f.name;
-        b.appendChild(name);
-        if (f.practice) {
-          const tip = document.createElement('span'); tip.className = 'bubble-practice'; tip.textContent = f.practice;
-          b.appendChild(tip);
-        }
-        b.title = `${f.drawings.length}장: ${f.drawings.join(', ')}${f.practice ? '\n다음 연습: ' + f.practice : ''}`;
-        box.appendChild(b);
+        const name = document.createElement('span'); name.className = 'bubble-name'; name.textContent = f.name; cap.appendChild(name);
+        if (f.practice) { const tip = document.createElement('span'); tip.className = 'bubble-practice'; tip.textContent = f.practice; cap.appendChild(tip); }
+        cell.title = `${f.drawings.length}장: ${f.drawings.join(', ')}`;
+        cell.append(circle, cap);
+        box.appendChild(cell);
       }
     }
     const rows = Math.max(1, Math.ceil(fs.length / 2));
-    const D = Math.max(120, Math.min(H / (rows + 0.5), H * 0.42, 460));
+    const D = Math.max(120, Math.min(H / (rows + 0.9), H * 0.36, 380));   // largest circle
+    const cellW = D * 1.3, colGap = D * 0.12, rowGap = D * 0.14;
     const total = g.total || g.members.length;
-    [...box.children].forEach((b, i) => {
+    const cells = [...box.children];
+    // pass 1: sizes (the caption wraps to the cell width; its height is then measured)
+    cells.forEach((c, i) => {
       const share = Math.min(1, fs[i].drawings.length / total);
-      const dia = D * (0.68 + 0.32 * share);
-      const col = i % 2, row = Math.floor(i / 2);
-      const cx = x0 + bulge + gap + D * 0.55 + col * D * 0.95;
-      const cy = bx.T + D * 0.55 + row * D * 1.0 + col * D * 0.5;
-      Object.assign(b.style, { left: cx - dia / 2 + 'px', top: cy - dia / 2 + 'px', width: dia + 'px', height: dia + 'px', fontSize: Math.max(10, dia * 0.085) + 'px' });
+      const dia = D * (0.72 + 0.28 * share);
+      c.style.width = cellW + 'px';
+      c.style.fontSize = Math.max(10, D * 0.085) + 'px';
+      const circle = c.firstChild;
+      circle.style.width = circle.style.height = dia + 'px';
     });
-    placed.push({ T: bx.T, B: bx.B, right: x0 + bulge + gap + (fs.length > 1 ? D * 2.05 : fs.length ? D * 1.1 : 0) });
+    // pass 2: positions, stacking each column on the real heights
+    const colY = [bx.T, bx.T + D * 0.55];
+    const left0 = x0 + bulge + gap;
+    cells.forEach((c, i) => {
+      const col = i % 2;
+      c.style.left = left0 + col * (cellW + colGap) + 'px';
+      c.style.top = colY[col] + 'px';
+      colY[col] += c.offsetHeight + rowGap;
+    });
+    placed.push({ T: bx.T, B: Math.max(bx.B, ...colY), right: x0 + bulge + gap + (fs.length > 1 ? cellW * 2 + colGap : fs.length ? cellW : 0) });
   }
   for (const el of [...linksSvg.querySelectorAll('g[data-gid]')]) if (!keep.has(el.dataset.gid)) el.remove();
   for (const el of [...world.querySelectorAll('.bubbles')]) if (!keep.has(el.dataset.gid)) el.remove();

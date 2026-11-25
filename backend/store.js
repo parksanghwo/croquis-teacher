@@ -60,6 +60,7 @@ export const imagePath = id => path.join(UPLOAD_DIR, board.images[id].file);
 const GRACE_MS = 60 * 60 * 1000;
 export function collectGarbage() {
   const used = new Set(Object.values(board.items).flatMap(it => [it.image, it.layers?.a, it.layers?.b]).filter(Boolean));
+  for (const g of Object.values(board.groups || {})) for (const f of g.features || []) if (f.crop) used.add(f.crop);
   // AI line versions live as long as the photo they were made from
   for (const id of [...used]) for (const aiId of Object.values(board.images[id]?.ai || {})) used.add(aiId);
   const now = Date.now();
