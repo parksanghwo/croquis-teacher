@@ -496,11 +496,19 @@ function renderGroups() {
         box.appendChild(cell);
       }
     }
+    let noteEl = box.querySelector('.gnote');
+    const noteText = !g.pending && !fs.length ? (g.note || '') : '';
+    if (noteText) {
+      if (!noteEl) { noteEl = document.createElement('div'); noteEl.className = 'gnote'; box.appendChild(noteEl); }
+      noteEl.textContent = noteText; // server text: set as text, never markup
+      noteEl.style.left = x0 + bulge + gap + 'px'; noteEl.style.top = (bx.T + bx.B) / 2 + 'px';
+      noteEl.style.fontSize = Math.max(12, H * 0.035) + 'px'; noteEl.style.width = Math.max(220, H * 0.9) + 'px';
+    } else if (noteEl) noteEl.remove();
     const rows = Math.max(1, Math.ceil(fs.length / 2));
     const D = Math.max(120, Math.min(H / (rows + 0.9), H * 0.36, 380));   // largest circle
     const cellW = D * 1.3, colGap = D * 0.12, rowGap = D * 0.14;
     const total = g.total || g.members.length;
-    const cells = [...box.children];
+    const cells = [...box.children].filter(c => c.classList.contains('bcell'));
     // pass 1: sizes (the caption wraps to the cell width; its height is then measured)
     cells.forEach((c, i) => {
       const share = Math.min(1, fs[i].drawings.length / total);
@@ -555,7 +563,7 @@ async function makeGroup(ids) {
     upsertGroup(g);
   } catch (err) {
     tmp.pending = false;
-    if (!existing) groups = groups.filter(x => x !== tmp);
+    tmp.note = err.message; // the bracket stays, with the reason under it
     toast(err.message);
   }
   renderGroups();
@@ -1079,6 +1087,12 @@ window.addEventListener('keydown', e => {
   }
   if (typing()) return;
   const mod = e.ctrlKey || e.metaKey;
+  if (e.key === 'Enter' && !mod && (selGroup || selected.size > 1)) {
+    // Enter on a group (or on several selected overlays): analyse their common errors again
+    const g = selGroup && groups.find(x => x.id === selGroup);
+    const ids = g ? g.members : [...selected].filter(id => { const it = byId(id); return it && it.layers && isOverlay(it); });
+    if (ids.length >= 2) { e.preventDefault(); lastGroupKey = [...ids].sort().join(','); makeGroup(ids); return; }
+  }
   if (e.key === 'Enter' && !mod && selected.size === 1) {
     // Enter on a selected overlay: compare the line art with the croquis (again: back to normal)
     const it = byId([...selected][0]);

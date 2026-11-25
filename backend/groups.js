@@ -175,17 +175,31 @@ async function addCrops(features, logs) {
   }));
 }
 
-/** Work out a group's common features (logging any member corrections not yet logged). */
+/** Work out a group's common features (logging any member corrections not yet logged).
+ *  When no circle comes out, group.note says why in one short line (shown under the bracket). */
 export async function computeGroup(group) {
   const members = group.members.filter(id => board.items[id]);
-  if (aiEnabled()) await Promise.all(members.map(id => reviewItem(board.items[id]).catch(() => null)));
+  const failed = [];
+  if (aiEnabled()) await Promise.all(members.map(id => reviewItem(board.items[id]).catch(err => { failed.push(err.message); return null; })));
   const logs = memberLogs(members);
-  const enough = logs.filter(l => l.rows.length).length >= 2;
-  let features = [];
-  if (enough) features = aiEnabled() ? await commonByModel(logs) : commonByWording(logs);
+  const marked = members.filter(id => (board.items[id].strokes || []).some(s => s.c)).length;
+  const withRows = logs.filter(l => l.rows.length).length;
+  let features = [], note = '';
+  if (withRows >= 2) {
+    try { features = aiEnabled() ? await commonByModel(logs) : commonByWording(logs); }
+    catch (err) { note = err.message; }
+  }
   features.sort((a, b) => b.drawings.length - a.drawings.length);
   await addCrops(features, logs);
-  Object.assign(group, { members, features, total: members.length, at: new Date().toISOString() });
+  if (!features.length && !note) {
+    if (failed.length) note = failed[0];
+    else if (!aiEnabled() && withRows < 2) note = 'OpenAI API 키가 없어 분석할 수 없어요';
+    else if (marked < 2) note = `빨간펜 교정이 있는 그림이 2장 이상 필요해요 (지금 ${marked}장)`;
+    else if (withRows < 2) note = '교정 표에 기록된 오류가 2장 이상에서 나오지 않았어요';
+    else note = '2장 이상에서 반복된 오류를 찾지 못했어요';
+    console.log(`[groups] no circles: ${note}`);
+  }
+  Object.assign(group, { members, features, note, total: members.length, at: new Date().toISOString() });
   persist();
   return group;
 }

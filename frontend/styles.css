@@ -260,3 +260,4 @@ body{background:var(--bg);color:var(--ink);font-family:var(--f-ui);overscroll-be
 #topControls #penSize{position:static;left:auto;bottom:auto;gap:10px;padding:0 10px 0 6px;background:var(--panel);border-radius:999px;box-shadow:var(--shadow)}
 #topControls #penSize .taper{width:min(190px,28vw);height:48px}
 #topControls #penSize #penVal{box-shadow:none;padding:4px 6px;min-width:40px}
+.bubbles .gnote{position:absolute;transform:translateY(-50%);color:var(--muted);line-height:1.35;white-space:normal;pointer-events:none}

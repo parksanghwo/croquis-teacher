@@ -304,7 +304,7 @@ api.post('/groups', async (req, res) => {
   if (ids.length < 2) return res.status(400).json({ error: '두 개 이상의 겹쳐 보기를 묶어야 합니다' });
   const g = createGroup(ids);
   try { res.json(await computeGroup(g)); }
-  catch (err) { console.error('[groups]', err.message); res.status(502).json({ error: err.message, group: g }); }
+  catch (err) { console.error('[groups]', err.message); g.note = err.message; res.json(g); } // shown under the bracket
 });
 // Practice photos from Pinterest for one circle (feature) of a group.
 api.post('/groups/:id/pins', async (req, res) => {
