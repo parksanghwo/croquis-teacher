@@ -42,13 +42,24 @@ const SCHEMA = {
   },
 };
 
-/** Correction rows per member: { itemId, file, rows } (rows without '판단 어려움' patterns). */
+/** Correction rows per member: { itemId, file, rows } (rows without '판단 어려움' patterns).
+ *  `file` is unique within the group: photos pasted or taken on an iPad are often all called
+ *  "image.png", and two drawings with one name would count as a single drawing. */
 function memberLogs(ids) {
-  return ids.map(id => {
+  const logs = ids.map(id => {
     const r = board.reviews?.[id];
     const file = r?.file || (board.items[id] ? fileNameFor(board.items[id]) : id);
     return { itemId: id, file, rows: (r?.rows || []).filter(x => x['반복 패턴'] && x['반복 패턴'] !== UNSURE) };
   });
+  const count = new Map();
+  for (const l of logs) count.set(l.file, (count.get(l.file) || 0) + 1);
+  const seen = new Map();
+  for (const l of logs) {
+    if (count.get(l.file) < 2) continue;
+    const k = (seen.get(l.file) || 0) + 1; seen.set(l.file, k);
+    l.file = `${l.file} (${k})`;
+  }
+  return logs;
 }
 
 /** Without AI: the same 반복 패턴 wording in two or more drawings. */
