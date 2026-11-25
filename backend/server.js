@@ -272,6 +272,8 @@ api.post('/groups', async (req, res) => {
 });
 api.delete('/groups/:id', (req, res) => {
   if (board.groups) delete board.groups[req.params.id];
+  // arrows drawn from its circles go with it
+  for (const [lid, l] of Object.entries(board.links)) if (l.from.startsWith(`f-${req.params.id}-`)) delete board.links[lid];
   persist();
   res.status(204).end();
 });

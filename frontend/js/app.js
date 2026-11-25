@@ -19,6 +19,8 @@ const selected = new Set();
 let links = [];            // {id, from, to, side}  side = knob side on the source
 let groups = [];           // {id, members[], features[{name,type,drawings[]}], total, pending?}
 let selGroup = null;
+let selBubble = null;        // a selected circle (feature): shows knobs like a photo
+const bubbleNodes = new Map(); // circle id → its box on the board {id, x, y, w, h, isBubble, gid}
 let lastGroupKey = '';
 let selLink = null;
 const linksSvg = document.getElementById('links');
@@ -177,10 +179,13 @@ function drawLink(g, a, sa, b, sb) {
   const hd = document.createElementNS(SVGNS, 'polygon'); hd.setAttribute('class', 'head'); hd.setAttribute('points', head);
   g.append(hit, line, hd);
 }
+/** An arrow's end: a photo/frame, or a circle of a group's common feature. */
+const nodeOf = id => byId(id) || bubbleNodes.get(id);
 function renderLinks() {
+  renderGroups(); // circles first: arrows may start at them
   const keep = new Set();
   for (const l of links) {
-    const A = byId(l.from), B = byId(l.to);
+    const A = nodeOf(l.from), B = nodeOf(l.to);
     if (!A || !B) continue;
     let g = linksSvg.querySelector(`g[data-id="${l.id}"]`);
     if (!g) { g = document.createElementNS(SVGNS, 'g'); g.dataset.id = l.id; linksSvg.appendChild(g); }
@@ -191,7 +196,6 @@ function renderLinks() {
     keep.add(l.id);
   }
   for (const g of [...linksSvg.querySelectorAll('g[data-id]')]) if (!keep.has(g.dataset.id)) g.remove();
-  renderGroups();
 }
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
@@ -213,7 +217,7 @@ async function fillFrame(it, blob) {
   const up = await upload(blob);
   if (!up) return false;
   const size = { w: up.w, h: up.h };
-  const linked = links.some(l => l.to === it.id);
+  const linked = links.some(l => l.to === it.id && byId(l.from));
   if (linked) {
     // an arrow points here: keep the frame's size and crop the photo to fill it
     it.cover = true;
@@ -276,7 +280,9 @@ async function addBlobs(blobs, at, target) {
 function removeSelected() {
   if (selGroup) {
     const id = selGroup; selGroup = null;
-    groups = groups.filter(g => g.id !== id); renderGroups();
+    groups = groups.filter(g => g.id !== id);
+    links = links.filter(l => !l.from.startsWith(`f-${id}-`));
+    renderLinks();
     api.deleteGroup(id).catch(err => toast(err.message));
     return;
   }
@@ -308,13 +314,15 @@ function duplicateSelected() {
 
 /* ---------- knob → new empty frame ---------- */
 const GAP = 80;
-function spawnFrame(src, side, cx, cy) {
+function spawnFrame(src, side, cx, cy, size) {
+  const w = size ? size.w : src.w, h = size ? size.h : src.h;
   let x, y;
-  if (cx == null) { // click: place right next to the source in the knob's direction
-    const [nx, ny] = NORM[side];
-    x = src.x + nx * (src.w + GAP); y = src.y + ny * (src.h + GAP);
-  } else { x = cx - src.w / 2; y = cy - src.h / 2; }
-  const it = { id: uid(), x, y, w: src.w, h: src.h, order: ++orderCounter, image: null, url: null };
+  if (cx == null) { // click: place right next to the source in the knob's direction, centred on it
+    const scx = src.x + src.w / 2, scy = src.y + src.h / 2;
+    x = side === 'e' ? src.x + src.w + GAP : side === 'w' ? src.x - GAP - w : scx - w / 2;
+    y = side === 's' ? src.y + src.h + GAP : side === 'n' ? src.y - GAP - h : scy - h / 2;
+  } else { x = cx - w / 2; y = cy - h / 2; }
+  const it = { id: uid(), x, y, w, h, order: ++orderCounter, image: null, url: null };
   items.push(it); makeEl(it);
   links.push({ id: uid(), from: src.id, to: it.id, side });
   select([it.id]); renderLinks(); scheduleSave();
@@ -368,6 +376,12 @@ async function autoFrame(it) {
 // Shift+click several overlays (grouped when Shift is released) or lasso them: a curved
 // bracket joins them on the right and circles show the errors their correction logs share,
 // bigger when more drawings share it.
+/** Stable id of a feature circle: group + feature name. */
+function fidOf(g, f) {
+  let h = 5381;
+  for (const ch of f.name) h = ((h * 33) ^ ch.charCodeAt(0)) >>> 0;
+  return `f-${g.id}-${h.toString(36)}`;
+}
 function groupBox(g) {
   const ms = g.members.map(byId).filter(Boolean);
   if (ms.length < 2) return null;
@@ -407,7 +421,8 @@ function renderGroups() {
       box.dataset.sig = sig;
       box.innerHTML = '';
       for (const f of fs) {
-        const cell = document.createElement('div'); cell.className = 'bcell';
+        const cell = document.createElement('div'); cell.className = 'bcell'; cell.dataset.fid = fidOf(g, f);
+        const wrap = document.createElement('div'); wrap.className = 'bwrap';
         const circle = document.createElement('div'); circle.className = 'bubble';
         if (f.cropUrl) { const im = document.createElement('img'); im.src = f.cropUrl; im.alt = ''; im.draggable = false; circle.appendChild(im); }
         const cap = document.createElement('div'); cap.className = 'bcap';
@@ -415,7 +430,13 @@ function renderGroups() {
         const name = document.createElement('span'); name.className = 'bubble-name'; name.textContent = f.name; cap.appendChild(name);
         if (f.practice) { const tip = document.createElement('span'); tip.className = 'bubble-practice'; tip.textContent = f.practice; cap.appendChild(tip); }
         cell.title = `${f.drawings.length}장: ${f.drawings.join(', ')}`;
-        cell.append(circle, cap);
+        wrap.appendChild(circle);
+        for (const k of ['n', 'e', 's', 'w']) {
+          const kn = document.createElement('div'); kn.className = 'k ' + k; kn.dataset.k = k;
+          kn.innerHTML = '<svg viewBox="0 0 12 12"><path d="M6 2v8M2 6h8"/></svg>';
+          wrap.appendChild(kn);
+        }
+        cell.append(wrap, cap);
         box.appendChild(cell);
       }
     }
@@ -430,8 +451,10 @@ function renderGroups() {
       const dia = D * (0.72 + 0.28 * share);
       c.style.width = cellW + 'px';
       c.style.fontSize = Math.max(10, D * 0.085) + 'px';
-      const circle = c.firstChild;
-      circle.style.width = circle.style.height = dia + 'px';
+      const wrap = c.firstChild;
+      wrap.style.width = wrap.style.height = dia + 'px';
+      c.dataset.dia = dia;
+      c.classList.toggle('sel', selBubble === c.dataset.fid);
     });
     // pass 2: positions, stacking each column on the real heights
     const colY = [bx.T, bx.T + D * 0.55];
@@ -440,6 +463,8 @@ function renderGroups() {
       const col = i % 2;
       c.style.left = left0 + col * (cellW + colGap) + 'px';
       c.style.top = colY[col] + 'px';
+      const dia = +c.dataset.dia, left = left0 + col * (cellW + colGap);
+      bubbleNodes.set(c.dataset.fid, { id: c.dataset.fid, gid: g.id, isBubble: true, x: left + (cellW - dia) / 2, y: colY[col], w: dia, h: dia });
       colY[col] += c.offsetHeight + rowGap;
     });
     placed.push({ T: bx.T, B: Math.max(bx.B, ...colY), right: x0 + bulge + gap + (fs.length > 1 ? cellW * 2 + colGap : fs.length ? cellW : 0) });
@@ -598,7 +623,7 @@ function clearSpawnPreview() {
 function select(ids, additive) {
   if (!additive) selected.clear();
   if (!ids.length && !additive) lastGroupKey = '';
-  if (selGroup) { selGroup = null; renderGroups(); }
+  if (selGroup || selBubble) { selGroup = null; selBubble = null; renderGroups(); }
   if (selLink) { selLink = null; renderLinks(); }
   for (const id of ids) selected.add(id);
   refreshSel();
@@ -632,6 +657,28 @@ vp.addEventListener('pointerdown', e => {
   const itemEl = target.closest && target.closest('.item');
   const isTouch = e.pointerType === 'touch';
 
+  // a circle's knob: drag out an arrow (to a photo/frame) or a new frame, like a photo's knob
+  const bknob = target.closest && target.closest('.bwrap .k');
+  if (bknob && e.button === 0) {
+    const node = bubbleNodes.get(bknob.closest('.bcell').dataset.fid);
+    if (node) {
+      const g = groups.find(x => x.id === node.gid), m = g && byId(g.members[0]);
+      bknob.classList.add('active');
+      mode = 'spawn';
+      drag = { src: node, side: bknob.dataset.k, sx: e.clientX, sy: e.clientY, moved: false, size: m ? { w: m.w, h: m.h } : { w: 345, h: 450 } };
+      e.preventDefault(); return;
+    }
+  }
+  // tapping a circle or bracket selects it (fingers too)
+  const grpHit = target.closest && target.closest('.bubbles, #links g[data-gid]');
+  if (grpHit && e.button === 0) {
+    selected.clear(); refreshSel();
+    selGroup = grpHit.dataset.gid;
+    const cell = target.closest('.bcell');
+    selBubble = cell ? cell.dataset.fid : null;
+    renderGroups();
+    mode = null; return;
+  }
   if (e.button === 1 || spaceDown || (!itemEl && isTouch)) {
     mode = 'pan'; drag = { sx: e.clientX, sy: e.clientY, cx: cam.x, cy: cam.y };
     vp.classList.add('panning'); e.preventDefault(); return;
@@ -773,9 +820,10 @@ vp.addEventListener('pointermove', e => {
       return;
     }
     if (!ghostEl) { ghostEl = document.createElement('div'); ghostEl.className = 'ghost'; world.appendChild(ghostEl); }
-    Object.assign(ghostEl.style, { left: (c.x - src.w / 2) + 'px', top: (c.y - src.h / 2) + 'px', width: src.w + 'px', height: src.h + 'px', zIndex: orderCounter + 1 });
+    const gs = drag.size || src;
+    Object.assign(ghostEl.style, { left: (c.x - gs.w / 2) + 'px', top: (c.y - gs.h / 2) + 'px', width: gs.w + 'px', height: gs.h + 'px', zIndex: orderCounter + 1 });
     if (!tmpLink) { tmpLink = document.createElementNS(SVGNS, 'g'); tmpLink.setAttribute('class', 'tmp'); linksSvg.appendChild(tmpLink); }
-    const ghost = { x: c.x - src.w / 2, y: c.y - src.h / 2, w: src.w, h: src.h };
+    const ghost = { x: c.x - gs.w / 2, y: c.y - gs.h / 2, w: gs.w, h: gs.h };
     const sb = facingSide(ghost, src);
     drawLink(tmpLink, sidePoint(src, side), side, sidePoint(ghost, sb), sb);
   }
@@ -796,7 +844,16 @@ function endPointer(e) {
     const tgt = linkTarget;
     clearSpawnPreview(); setLinkTarget(null);
     if (e.type === 'pointerup') {
-      if (drag.moved && tgt) connect(drag.src, drag.side, tgt);
+      if (drag.src.isBubble) {
+        // from a circle: an arrow to the photo/frame it was dropped on (nothing gets resized),
+        // or a new empty frame the size of the grouped overlays
+        if (drag.moved && tgt) {
+          if (!links.some(l => l.from === drag.src.id && l.to === tgt.id)) links.push({ id: uid(), from: drag.src.id, to: tgt.id, side: drag.side });
+          renderLinks(); scheduleSave();
+        } else if (drag.moved) { const c = toWorld(e.clientX, e.clientY); spawnFrame(drag.src, drag.side, c.x, c.y, drag.size); }
+        else spawnFrame(drag.src, drag.side, null, null, drag.size);
+      }
+      else if (drag.moved && tgt) connect(drag.src, drag.side, tgt);
       else if (drag.moved) { const c = toWorld(e.clientX, e.clientY); spawnFrame(drag.src, drag.side, c.x, c.y); }
       else spawnFrame(drag.src, drag.side);
     }
@@ -1515,7 +1572,8 @@ async function seedExamples() {
       orderCounter = Math.max(orderCounter, r.order);
       items.push(it); makeEl(it);
     }
-    links = data.links.filter(l => byId(l.from) && byId(l.to));
+    // arrows from a group's circle start at an id like f-<group>-<feature>
+    links = data.links.filter(l => (byId(l.from) || l.from.startsWith('f-')) && byId(l.to));
     groups = (data.groups || []).filter(g => g.members.filter(byId).length >= 2);
     if (data.camera) Object.assign(cam, data.camera);
     applyCam();

@@ -228,3 +228,9 @@ body{background:var(--bg);color:var(--ink);font-family:var(--f-ui);overscroll-be
   word-break:keep-all;overflow-wrap:anywhere;text-wrap:balance;width:100%}
 .bubble-name{font-weight:600}
 .bubble-practice{font-size:.8em;color:var(--muted);line-height:1.35}
+
+/* a circle selected like a photo: outline and the four knobs */
+.bwrap{position:relative;flex:none}
+.bwrap .bubble{width:100%;height:100%}
+.bcell.sel .bubble{border-color:var(--accent);box-shadow:0 0 0 calc(3px * var(--inv)) var(--accent-soft)}
+.bcell.sel .bwrap .k{display:grid}
