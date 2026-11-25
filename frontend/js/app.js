@@ -12,7 +12,6 @@ const zoomLabel = document.getElementById('zoomLabel');
 const delBtn = document.getElementById('delBtn');
 const fileInput = document.getElementById('fileInput');
 const dropEl = document.getElementById('drop');
-const toastEl = document.getElementById('toast');
 
 const cam = { x: 0, y: 0, z: 1 };
 let items = [];            // {id,x,y,w,h,order,image,url,el,cover,pos,zoom,strokes,label,example}; image = server image id
@@ -848,7 +847,7 @@ function setOver(it) {
   if (overFrame === it) return;
   if (overFrame) overFrame.el.classList.remove('over');
   overFrame = it; if (it) it.el.classList.add('over');
-  dropEl.textContent = it ? '놓으면 이 빈 캔버스에 사진이 채워집니다' : '여기에 놓으면 캔버스에 추가됩니다';
+
 }
 window.addEventListener('dragover', e => { if (!hasFiles(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setOver(frameAt(e.clientX, e.clientY)); });
 window.addEventListener('dragleave', e => { if (!hasFiles(e)) return; dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) { dropEl.hidden = true; setOver(null); } });
@@ -1067,12 +1066,11 @@ function setHelp(collapsed) {
 helpToggle.onclick = () => setHelp(!help.classList.contains('collapsed'));
 try { if (localStorage.getItem('ic-help') === '1') setHelp(true); else if (innerWidth < 560) setHelp(true); } catch { if (innerWidth < 560) setHelp(true); }
 
-let toastTimer;
 /** Show a message; ms = 0 keeps it up until the next message. */
-function toast(msg, ms = 2200) {
-  toastEl.textContent = msg; toastEl.classList.add('show');
-  clearTimeout(toastTimer);
-  if (ms) toastTimer = setTimeout(() => toastEl.classList.remove('show'), ms);
+// The board shows no messages at all (minimal UI). Calls stay in place as notes of what
+// happened; they only go to the browser console, where they help when something fails.
+function toast(msg) {
+  if (msg) console.info('[끄로뀌]', msg);
 }
 
 /* what the server can do (AI line extraction on or off) */

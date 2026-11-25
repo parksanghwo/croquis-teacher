@@ -205,3 +205,7 @@ body{background:var(--bg);color:var(--ink);font-family:var(--f-ui);overscroll-be
 
 /* iPad Safari: no long-press callouts or selection on the board */
 #viewport,#viewport *{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+
+/* minimal board: no name tags, no hint text in empty frames (the frame icon stays) */
+.tag{display:none}
+.frame-box span{display:none}
