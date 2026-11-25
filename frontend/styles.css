@@ -170,3 +170,6 @@ body{background:var(--bg);color:var(--ink);font-family:var(--f-ui);overscroll-be
 
 /* compare mode (Enter): the recoloured reference already carries its own transparency */
 .item.comparing .clip.layered img.layer-a{opacity:1}
+
+/* a cropped photo shrunk below its frame (auto-crop or Alt+scroll) sits on white paper */
+.item.cover .clip{background:#fff}

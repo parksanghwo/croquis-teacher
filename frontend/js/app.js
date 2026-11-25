@@ -4,6 +4,7 @@
 import { api } from './api.js';
 import { cropGeom, strokeSeg, drawStroke, renderStrokes } from './strokes.js';
 import { compareLayers } from './compare.js';
+import { figureBox, cropForBox } from './frame.js';
 
 const vp = document.getElementById('viewport');
 const world = document.getElementById('world');
@@ -223,7 +224,13 @@ async function fillFrame(it, blob) {
   fillContent(it, it.el); layout(it);
   select([it.id]); scheduleSave();
   toast(linked ? '화살표 출발 사진과 같은 크기로 잘라 채웠습니다' : '빈 캔버스에 사진을 채웠습니다');
-  refreshOverlaysFor(it.id);
+  if (linked) await autoFrame(it);
+  // a photo arriving at either end of an arrow builds (or rebuilds) that arrow's overlay
+  for (const l of links) {
+    if (l.from !== it.id && l.to !== it.id) continue;
+    if (l.overlay && byId(l.overlay)) makeOverlay(l, true);
+    else if (hasContent(byId(l.from)) && hasContent(byId(l.to))) makeOverlay(l, false);
+  }
   return true;
 }
 const frameAt = (x, y) => {
@@ -316,16 +323,36 @@ function setLinkTarget(it) {
   if (linkTarget && linkTarget.el) linkTarget.el.classList.remove('link-target');
   linkTarget = it; if (it) it.el.classList.add('link-target');
 }
-function connect(src, side, tgt) {
-  const dup = links.find(l => (l.from === src.id && l.to === tgt.id) || (l.from === tgt.id && l.to === src.id));
-  if (dup) {
-    dup.from = src.id; dup.to = tgt.id; dup.side = side;
+async function connect(src, side, tgt) {
+  let link = links.find(l => (l.from === src.id && l.to === tgt.id) || (l.from === tgt.id && l.to === src.id));
+  if (link) {
+    link.from = src.id; link.to = tgt.id; link.side = side;
   } else {
-    links.push({ id: uid(), from: src.id, to: tgt.id, side });
+    link = { id: uid(), from: src.id, to: tgt.id, side };
+    links.push(link);
   }
   syncFrom(src);
-  toast(tgt.image ? '같은 크기·비율로 맞춰 잘랐습니다. Alt+드래그로 위치를 옮길 수 있습니다' : '화살표로 연결하고, 같은 크기로 맞췄습니다');
   renderLinks(); scheduleSave();
+  if (tgt.image) await autoFrame(tgt);
+  // connecting already says "compare these two": build the overlay right away
+  if (hasContent(src) && hasContent(tgt)) makeOverlay(link, false);
+  else toast('화살표로 연결하고, 같은 크기로 맞췄습니다. 사진을 넣으면 바로 겹쳐 봅니다');
+}
+const hasContent = it => !!(it && (it.image || (it.strokes && it.strokes.length)));
+
+/**
+ * Crop a photo that an arrow points at so its whole figure stays in view: find where the
+ * drawing is on the paper and centre the crop on it, shrinking below 100% only if needed.
+ */
+async function autoFrame(it) {
+  if (!it.image || !it.cover) return;
+  try {
+    const box = await figureBox(it.url);
+    if (!box) return; // nothing stands out: keep the centred crop
+    const { zoom, pos } = cropForBox(box, it.w, it.h);
+    it.zoom = zoom; it.pos = pos;
+    layout(it); scheduleSave();
+  } catch { /* keep the centred crop */ }
 }
 /* ---------- arrow click → overlay: reference line art at 30%, croquis at 50% (built by the backend) ---------- */
 /** " 도착 그림을 112%로 키우고 위치를 맞췄습니다" — how the server fitted the arrow's end onto its start */
