@@ -20,6 +20,7 @@ const { composeOverlay, hasContent } = await import('./compose.js');
 const { aiEnabled, aiConfig, processedImage } = await import('./ai.js');
 const { reviewItem, allRows, toCsv } = await import('./review.js');
 const { createGroup, computeGroup, groupsWith, forgetMember } = await import('./groups.js');
+const { findPinPhotos } = await import('./pins.js');
 
 const PORT = Number(process.env.PORT) || 3000;
 const FRONTEND_DIR = path.resolve(import.meta.dirname, '..', 'frontend');
@@ -69,6 +70,7 @@ function cleanItem(id, body) {
   if (typeof body.label === 'string' && body.label) it.label = body.label.slice(0, 80);
   if (body.example) it.example = true;
   if (body.refOff) it.refOff = true;
+  if (typeof body.source === 'string' && /^https?:\/\//.test(body.source)) it.source = body.source.slice(0, 500);
   if (body.compare) it.compare = true;
   const strokes = cleanStrokes(body.strokes);
   if (strokes) it.strokes = strokes;
@@ -270,6 +272,16 @@ api.post('/groups', async (req, res) => {
   try { res.json(await computeGroup(g)); }
   catch (err) { console.error('[groups]', err.message); res.status(502).json({ error: err.message, group: g }); }
 });
+// Practice photos from Pinterest for one circle (feature) of a group.
+api.post('/groups/:id/pins', async (req, res) => {
+  const g = board.groups?.[req.params.id];
+  const f = g && (g.features || []).find(x => x.name === req.body?.name);
+  if (!f) return res.status(404).json({ error: '공통 특징을 찾을 수 없습니다' });
+  if (!aiEnabled()) return res.status(400).json({ error: 'Pinterest 검색에는 OpenAI API 키가 필요합니다' });
+  try { res.json({ photos: await findPinPhotos(f, 4) }); }
+  catch (err) { console.error('[pins]', err.message); res.status(502).json({ error: err.message }); }
+});
+
 api.delete('/groups/:id', (req, res) => {
   if (board.groups) delete board.groups[req.params.id];
   // arrows drawn from its circles go with it

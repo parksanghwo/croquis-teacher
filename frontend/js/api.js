@@ -35,6 +35,8 @@ export const api = {
   /** Group overlays: bracket + circles with the features their correction logs share → group */
   createGroup: members => request('POST', '/groups', { members }),
   deleteGroup: id => request('DELETE', `/groups/${id}`),
+  /** Up to 4 Pinterest photos for a circle's practice condition → {photos:[{id,url,width,height,source}]} */
+  searchPins: (groupId, name) => request('POST', `/groups/${groupId}/pins`, { name }),
   putItem: item => request('PUT', `/items/${item.id}`, item),
   deleteItem: id => request('DELETE', `/items/${id}`),
   putLink: link => request('PUT', `/links/${link.id}`, link),

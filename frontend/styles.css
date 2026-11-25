@@ -234,3 +234,8 @@ body{background:var(--bg);color:var(--ink);font-family:var(--f-ui);overscroll-be
 .bwrap .bubble{width:100%;height:100%}
 .bcell.sel .bubble{border-color:var(--accent);box-shadow:0 0 0 calc(3px * var(--inv)) var(--accent-soft)}
 .bcell.sel .bwrap .k{display:grid}
+
+/* a circle while Pinterest photos are being found for it */
+.bcell.searching .bubble{border-style:dashed;border-color:var(--accent);animation:pinsearch 1.2s ease-in-out infinite}
+@keyframes pinsearch{50%{opacity:.55}}
+@media (prefers-reduced-motion:reduce){.bcell.searching .bubble{animation:none}}

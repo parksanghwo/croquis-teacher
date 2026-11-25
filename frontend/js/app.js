@@ -376,6 +376,44 @@ async function autoFrame(it) {
 // Shift+click several overlays (grouped when Shift is released) or lasso them: a curved
 // bracket joins them on the right and circles show the errors their correction logs share,
 // bigger when more drawings share it.
+/* ---------- Pinterest practice photos for a circle (double-click / double-tap) ---------- */
+const lastBubbleTap = { fid: null, t: 0 };
+const pinSearching = new Set();
+async function searchPinsFor(fid) {
+  const node = bubbleNodes.get(fid);
+  const g = node && groups.find(x => x.id === node.gid);
+  const f = g && (g.features || []).find(x => fidOf(g, x) === fid);
+  if (!f || pinSearching.has(fid)) return;
+  pinSearching.add(fid); renderGroups();
+  try {
+    const { photos } = await api.searchPins(g.id, f.name);
+    // place them in a 2×2 grid to the right of the group's circles, each fed by an arrow
+    const cells = [...world.querySelectorAll(`.bubbles[data-gid="${g.id}"] .bcell`)];
+    const right = Math.max(node.x + node.w, ...cells.map(c => parseFloat(c.style.left) + c.offsetWidth));
+    const m = byId(g.members[0]);
+    const cw = m ? m.w : 345, ch = m ? m.h : 450, gap = 40;
+    const n = photos.length, gw = Math.min(2, n) * cw + (n > 1 ? gap : 0), gh = Math.ceil(n / 2) * ch + (n > 2 ? gap : 0);
+    // start level with the circle, then step right until the grid clears everything on the board
+    let x0 = right + GAP * 1.5;
+    const y0 = node.y;
+    const hits = x => items.some(o => o.x < x + gw + gap && o.x + o.w > x - gap && o.y < y0 + gh + gap && o.y + o.h > y0 - gap);
+    for (let tries = 0; tries < 50 && hits(x0); tries++) x0 += cw + gap;
+    photos.forEach((ph, i) => {
+      const s = Math.min(cw / ph.width, ch / ph.height);
+      const w = ph.width * s, h = ph.height * s;
+      const cx = x0 + (i % 2) * (cw + gap) + cw / 2, cy = y0 + Math.floor(i / 2) * (ch + gap) + ch / 2;
+      const it = { id: uid(), x: cx - w / 2, y: cy - h / 2, w, h, order: ++orderCounter, image: ph.id, url: ph.url, source: ph.source };
+      items.push(it); makeEl(it);
+      links.push({ id: uid(), from: fid, to: it.id, side: 'e' });
+    });
+    renderLinks(); scheduleSave();
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    pinSearching.delete(fid); renderGroups();
+  }
+}
+
 /** Stable id of a feature circle: group + feature name. */
 function fidOf(g, f) {
   let h = 5381;
@@ -455,6 +493,7 @@ function renderGroups() {
       wrap.style.width = wrap.style.height = dia + 'px';
       c.dataset.dia = dia;
       c.classList.toggle('sel', selBubble === c.dataset.fid);
+      c.classList.toggle('searching', pinSearching.has(c.dataset.fid));
     });
     // pass 2: positions, stacking each column on the real heights
     const colY = [bx.T, bx.T + D * 0.55];
@@ -677,6 +716,11 @@ vp.addEventListener('pointerdown', e => {
     const cell = target.closest('.bcell');
     selBubble = cell ? cell.dataset.fid : null;
     renderGroups();
+    // double-click / double-tap on a circle: practice photos from Pinterest
+    const now = performance.now();
+    if (cell && lastBubbleTap.fid === cell.dataset.fid && now - lastBubbleTap.t < 400) { searchPinsFor(cell.dataset.fid); lastBubbleTap.fid = null; }
+    else lastBubbleTap.fid = cell ? cell.dataset.fid : null;
+    lastBubbleTap.t = now;
     mode = null; return;
   }
   if (e.button === 1 || spaceDown || (!itemEl && isTouch)) {
@@ -1457,7 +1501,7 @@ let sentCam = '';
 const itemJSON = it => JSON.stringify({
   id: it.id, x: it.x, y: it.y, w: it.w, h: it.h, order: it.order, image: it.image || null,
   cover: !!it.cover, pos: it.pos || null, zoom: it.zoom || null, label: it.label || null,
-  example: !!it.example, strokes: it.strokes || null, layers: it.layers || null, fit: it.fit || null, refOff: !!it.refOff, compare: !!it.compare,
+  example: !!it.example, strokes: it.strokes || null, layers: it.layers || null, fit: it.fit || null, refOff: !!it.refOff, compare: !!it.compare, source: it.source || null,
 });
 const linkJSON = l => JSON.stringify({ id: l.id, from: l.from, to: l.to, side: l.side, overlay: l.overlay || null });
 const camJSON = () => JSON.stringify({ x: cam.x, y: cam.y, z: cam.z });
