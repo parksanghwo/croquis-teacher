@@ -14,7 +14,7 @@ export function cropGeom(item, nw, nh, W, H) {
   return { x: (W - w) * px / 100, y: (H - h) * py / 100, w, h };
 }
 
-function strokesSvg(strokes, W, H) {
+export function strokesSvg(strokes, W, H) {
   // strokes are stored in units of the frame's width; segment width follows pen pressure
   const parts = [];
   for (const s of strokes) {
@@ -80,7 +80,7 @@ export async function renderLayer(item, W, H, drawId = item.image, { whole = fal
 }
 
 /** A layer on white, as raw RGB pixels. */
-const onWhite = (png) => sharp(png).flatten({ background: WHITE }).removeAlpha().raw().toBuffer();
+export const onWhite = (png) => sharp(png).flatten({ background: WHITE }).removeAlpha().raw().toBuffer();
 
 export function hasContent(item) {
   return !!(item && ((item.image && board.images[item.image]) || (item.strokes && item.strokes.length)));
@@ -127,7 +127,7 @@ export function fitFor(boxA, boxB, W, H) {
   return { s: Math.round(s * 1e4) / 1e4, dx: Math.round((ox / W) * 1e4) / 1e4, dy: Math.round((oy / H) * 1e4) / 1e4 };
 }
 
-const applyFit = (layer, fit, W, H) => place(layer, fit.dx * W, fit.dy * H, W * fit.s, H * fit.s, W, H);
+export const applyFit = (layer, fit, W, H) => place(layer, fit.dx * W, fit.dy * H, W * fit.s, H * fit.s, W, H);
 
 /**
  * Overlay of source A (30%) and target B (50%) on white, at B's aspect ratio.

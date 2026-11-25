@@ -18,6 +18,7 @@ const { default: sharp } = await import('sharp');
 const { board, persist, flushNow, imageUrl, collectGarbage, UPLOAD_DIR } = await import('./store.js');
 const { composeOverlay, hasContent } = await import('./compose.js');
 const { aiEnabled, aiConfig, processedImage } = await import('./ai.js');
+const { reviewItem, allRows, toCsv } = await import('./review.js');
 
 const PORT = Number(process.env.PORT) || 3000;
 const FRONTEND_DIR = path.resolve(import.meta.dirname, '..', 'frontend');
@@ -123,7 +124,10 @@ api.post('/images', express.raw({ type: 'image/*', limit: MAX_UPLOAD }), async (
   const id = crypto.randomUUID().replace(/-/g, '');
   const file = `${id}.${ext}`;
   await fs.promises.writeFile(path.join(UPLOAD_DIR, file), req.body);
-  board.images[id] = { file, width, height, bytes: req.body.length, createdAt: new Date().toISOString() };
+  // original file name (sent URL-encoded in a header) for the correction log's 그림 파일명
+  let name = '';
+  try { name = decodeURIComponent(String(req.get('X-File-Name') || '')).replace(/[\u0000-\u001f]/g, '').slice(0, 200); } catch {}
+  board.images[id] = { file, width, height, bytes: req.body.length, createdAt: new Date().toISOString(), ...(name ? { name } : {}) };
   persist();
   res.status(201).json({ id, url: imageUrl(id), width, height });
 });
@@ -240,6 +244,20 @@ api.post('/links/:id/overlay', async (req, res) => {
   collectGarbage();
   persist();
   res.status(created ? 201 : 200).json({ item: withUrl(ov), link, created, ai, alignment: align && !keepFit ? fitOut : null });
+});
+
+// Correction log (hidden table): analyse the red-pen marks on one canvas.
+api.post('/items/:id/review', async (req, res) => {
+  const it = board.items[req.params.id];
+  if (!it) return res.status(404).json({ error: '항목을 찾을 수 없습니다' });
+  if (!aiEnabled()) return res.json({ rows: [], skipped: true, reason: 'no-key' });
+  try { res.json(await reviewItem(it)); }
+  catch (err) { console.error('[review]', err.message); res.status(502).json({ error: err.message }); }
+});
+// The whole log as JSON or as a spreadsheet-friendly CSV.
+api.get('/reviews', (req, res) => res.json({ rows: allRows() }));
+api.get('/reviews.csv', (req, res) => {
+  res.type('text/csv; charset=utf-8').set('Content-Disposition', 'attachment; filename="correction-log.csv"').send(toCsv(allRows()));
 });
 
 // Lets the page say up front whether arrows will use AI line extraction.

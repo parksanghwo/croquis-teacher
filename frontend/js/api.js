@@ -26,7 +26,12 @@ export const api = {
   config: () => request('GET', '/config'),
   camera: cam => request('PUT', '/camera', { x: cam.x, y: cam.y, z: cam.z }),
   /** Upload an image blob → {id, url, width, height} */
-  uploadImage: blob => request('POST', '/images', blob, { 'Content-Type': blob.type && blob.type.startsWith('image/') ? blob.type : 'image/png' }),
+  uploadImage: blob => request('POST', '/images', blob, {
+    'Content-Type': blob.type && blob.type.startsWith('image/') ? blob.type : 'image/png',
+    ...(blob.name ? { 'X-File-Name': encodeURIComponent(blob.name) } : {}),
+  }),
+  /** Ask the AI to log the red-pen corrections on this item (hidden table) → {rows, skipped?} */
+  review: id => request('POST', `/items/${id}/review`),
   putItem: item => request('PUT', `/items/${item.id}`, item),
   deleteItem: id => request('DELETE', `/items/${id}`),
   putLink: link => request('PUT', `/links/${link.id}`, link),

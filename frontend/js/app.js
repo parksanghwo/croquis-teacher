@@ -963,7 +963,7 @@ function closeDrawer() {
   const it = dItem;
   const changed = JSON.stringify(it.strokes || []) !== JSON.stringify(dStrokes);
   if (dStrokes.length) it.strokes = dStrokes; else delete it.strokes;
-  if (changed) { fillContent(it, it.el); refreshOverlaysFor(it.id); scheduleSave(); recordStrokes(it, it._drawBefore || []); }
+  if (changed) { fillContent(it, it.el); refreshOverlaysFor(it.id); scheduleSave(); recordStrokes(it, it._drawBefore || []); scheduleReview(it); }
   const finish = () => { drawer.hidden = true; paper.style.transform = 'none'; dItem = null; };
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return finish();
   drawer.classList.add('enter');
@@ -1098,6 +1098,7 @@ function applyStrokes(it, list) {
   fillContent(it, it.el); layout(it);
   refreshOverlaysFor(it.id);
   scheduleSave();
+  scheduleReview(it);
 }
 function inkUndoStep() {
   const e = inkUndo.pop();
@@ -1163,6 +1164,27 @@ function endInk() {
   recordStrokes(it, before);
   refreshOverlaysFor(it.id); // a drawing on an empty frame feeds the overlays it is part of
   scheduleSave();
+  if (cur.c) scheduleReview(it);
+}
+
+/* correction log: 10 s after the last red-pen change on a canvas, the server has the AI
+   record the corrections in the hidden table (one row per error) */
+const REVIEW_IDLE_MS = Number(new URLSearchParams(location.search).get('reviewDelay')) || 10000;
+const reviewTimers = new Map();
+function scheduleReview(it) {
+  if (!serverConfig.ai || !it || !it.image) return;
+  clearTimeout(reviewTimers.get(it.id));
+  reviewTimers.set(it.id, setTimeout(async () => {
+    reviewTimers.delete(it.id);
+    if (ink && ink.it === it) { scheduleReview(it); return; } // still drawing
+    try {
+      await flushSave(); // the server reads the strokes it has stored
+      const r = await api.review(it.id);
+      if (!r.skipped && !r.cleared) toast(`교정 내용을 기록했습니다 (${r.rows.length}건)`, 1800);
+    } catch (err) {
+      toast(`교정 기록을 남기지 못했습니다: ${err.message}`, 4000);
+    }
+  }, REVIEW_IDLE_MS));
 }
 
 /* two-finger tap = undo, three-finger tap = redo (quick, without moving) */
@@ -1353,6 +1375,8 @@ async function seedExamples() {
   }
   ready = true;
   syncEye();
+  // corrections made right before the page was closed still get logged (unchanged ones are skipped)
+  api.config().then(c => { Object.assign(serverConfig, c); for (const it of items) if (it.image && it.strokes && it.strokes.some(s => s.c)) scheduleReview(it); }).catch(() => {});
   // overlays saved as one flat image (older version) are rebuilt as two layers
   for (const l of links) { const ov = l.overlay && byId(l.overlay); if (ov && ov.image && !ov.layers) makeOverlay(l, true); }
   scheduleSave();
