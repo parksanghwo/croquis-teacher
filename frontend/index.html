@@ -69,15 +69,15 @@
     <button id="inkRedo" class="mini-btn" type="button" title="다시 실행 (세 손가락 탭, Ctrl+Shift+Z)" aria-label="다시 실행" disabled>
       <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
   </div>
+  <div id="penSize" hidden>
+    <div class="taper">
+      <svg viewBox="0 0 200 14" preserveAspectRatio="none" aria-hidden="true"><path d="M2 6.4 L198 1 Q200 1 200 3 L200 11 Q200 13 198 13 L2 7.6 Z"/></svg>
+      <input id="penRange" type="range" min="1" max="20" step="0.1" value="6" aria-label="펜 굵기">
+    </div>
+    <output id="penVal" for="penRange">6.0</output>
+  </div>
 </div>
 
-<div id="penSize" class="mini-group" hidden>
-  <div class="taper">
-    <svg viewBox="0 0 200 14" preserveAspectRatio="none" aria-hidden="true"><path d="M2 6.4 L198 1 Q200 1 200 3 L200 11 Q200 13 198 13 L2 7.6 Z"/></svg>
-    <input id="penRange" type="range" min="1" max="20" step="0.1" value="6" aria-label="펜 굵기">
-  </div>
-  <output id="penVal" for="penRange">6.0</output>
-</div>
 
 <div id="lightbox" hidden role="dialog" aria-modal="true" aria-label="사진 크게 보기">
   <img id="lbImg" alt="">

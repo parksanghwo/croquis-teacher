@@ -1209,8 +1209,6 @@ function paperArea() {
   // keep clear of the tool rows (top right: eye/compare/undo, bottom left: pen width)
   const tools = !topControls.hidden && topControls.getBoundingClientRect();
   if (tools && tools.height) top = Math.max(top, tools.bottom + gap);
-  const pen = !penSizeEl.hidden && penSizeEl.getBoundingClientRect();
-  if (pen && pen.height) bottom = Math.min(bottom, pen.top - gap);
   const left = vx + sl + 24, right = vx + vw - sr - 24;
   return { x: left, y: top, w: Math.max(50, right - left), h: Math.max(50, bottom - top) };
 }
@@ -1268,6 +1266,7 @@ async function layeredPreview(it) {
 function openDrawer(it) {
   dItem = it; dStrokes = (it.strokes || []).slice(); dUndo = []; dRedo = []; dCur = null; dPointer = null;
   it._drawBefore = dStrokes.slice();
+  resetPaperZoom(); dTouches.clear(); pinch = null; fingerPan = null;
   // photos (the overlay) get a red pen drawn over the image; empty frames get black on white
   dColor = it.image ? RED : '#111';
   drawer.style.setProperty('--pen', dColor);
@@ -1293,7 +1292,7 @@ function closeDrawer() {
   if (dStrokes.length) it.strokes = dStrokes; else delete it.strokes;
   if (changed) { fillContent(it, it.el); refreshOverlaysFor(it.id); scheduleSave(); recordStrokes(it, it._drawBefore || []); scheduleReview(it); }
   hideCanvasTools();
-  const finish = () => { drawer.hidden = true; paper.style.transform = 'none'; dItem = null; syncInkButtons(); };
+  const finish = () => { drawer.hidden = true; resetPaperZoom(); paper.style.transform = 'none'; dItem = null; syncInkButtons(); };
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return finish();
   drawer.classList.add('enter');
   paper.style.transform = rectTransform(it.el.getBoundingClientRect());
@@ -1306,10 +1305,79 @@ function paperPoint(e) {
   const p = e.pointerType === 'pen' ? 0.35 + (e.pressure || 0.5) * 1.3 : 1;
   return [Math.round(x * 1e4) / 1e4, Math.round(y * 1e4) / 1e4, Math.round(p * 100) / 100];
 }
+/* ---- two-finger zoom / pan of the full-screen paper ----
+   Pencil: always draws. One finger: draws until a Pencil has been used, after that it moves
+   the zoomed paper. A second finger turns whatever the first one was doing into zoom/pan
+   (a stroke just started by that finger is dropped). Ctrl+wheel / trackpad pinch on a computer. */
+const pz = { s: 1, tx: 0, ty: 0 };
+const dTouches = new Map();
+let pinch = null, fingerPan = null, dPointerType = '';
+function applyPaperZoom() {
+  paper.style.transform = pz.s === 1 && !pz.tx && !pz.ty ? 'none' : `translate(${pz.tx}px, ${pz.ty}px) scale(${pz.s})`;
+}
+function resetPaperZoom() { pz.s = 1; pz.tx = 0; pz.ty = 0; }
+function zoomPaperAt(mx, my, s, from = pz) {
+  s = Math.min(6, Math.max(1, s));
+  const qx = (mx - paperRect.x - from.tx) / from.s, qy = (my - paperRect.y - from.ty) / from.s; // paper point under (mx,my)
+  return { s, qx, qy };
+}
+/** After zooming, give the canvas enough pixels to stay sharp at the new size. */
+function sharpenPaper() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const want = Math.min(4096, Math.round(paperRect.w * pz.s * dpr));
+  if (Math.abs(want - dc.width) > 8) { dc.width = want; dc.height = Math.round(want * paperRect.h / paperRect.w); redrawPaper(); }
+}
+drawer.addEventListener('pointerdown', e => {
+  if (e.pointerType !== 'touch') return;
+  dTouches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (dTouches.size === 1 && penSeen && e.target === dc) {
+    fingerPan = { pid: e.pointerId, x0: e.clientX, y0: e.clientY, tx0: pz.tx, ty0: pz.ty };
+  }
+  if (dTouches.size === 2) {
+    if (dCur && dPointerType === 'touch') { dCur = null; dPointer = null; redrawPaper(); } // not a stroke after all
+    fingerPan = null;
+    const [a, b] = [...dTouches.values()];
+    pinch = { d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx0: (a.x + b.x) / 2, my0: (a.y + b.y) / 2, from: { ...pz } };
+  }
+}, true);
+drawer.addEventListener('pointermove', e => {
+  if (!dTouches.has(e.pointerId)) return;
+  dTouches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pinch && dTouches.size >= 2) {
+    const [a, b] = [...dTouches.values()];
+    const d = Math.hypot(a.x - b.x, a.y - b.y) || 1, mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    const z = zoomPaperAt(pinch.mx0, pinch.my0, pinch.from.s * d / pinch.d0, pinch.from);
+    pz.s = z.s; pz.tx = mx - paperRect.x - z.qx * z.s; pz.ty = my - paperRect.y - z.qy * z.s;
+    if (pz.s < 1.02) resetPaperZoom();
+    applyPaperZoom();
+  } else if (fingerPan && e.pointerId === fingerPan.pid && pz.s > 1) {
+    pz.tx = fingerPan.tx0 + e.clientX - fingerPan.x0; pz.ty = fingerPan.ty0 + e.clientY - fingerPan.y0;
+    applyPaperZoom();
+  }
+}, true);
+const dTouchEnd = e => {
+  if (!dTouches.delete(e.pointerId)) return;
+  if (pinch && dTouches.size < 2) { pinch = null; sharpenPaper(); }
+  if (!dTouches.size) fingerPan = null;
+};
+drawer.addEventListener('pointerup', dTouchEnd, true);
+drawer.addEventListener('pointercancel', dTouchEnd, true);
+drawer.addEventListener('wheel', e => {
+  if (drawer.hidden) return;
+  if (e.ctrlKey || e.metaKey) {
+    const z = zoomPaperAt(e.clientX, e.clientY, pz.s * Math.exp(-e.deltaY * 0.01));
+    pz.s = z.s; pz.tx = e.clientX - paperRect.x - z.qx * z.s; pz.ty = e.clientY - paperRect.y - z.qy * z.s;
+    if (pz.s < 1.02) resetPaperZoom();
+  } else if (pz.s > 1) { pz.tx -= e.deltaX; pz.ty -= e.deltaY; }
+  applyPaperZoom();
+  clearTimeout(drawer._sharpen); drawer._sharpen = setTimeout(sharpenPaper, 200);
+}, { passive: false });
+
 dc.addEventListener('pointerdown', e => {
   if (e.pointerType === 'pen') penSeen = true;
+  if (e.pointerType === 'touch' && dTouches.size > 1) return; // a second finger zooms, never draws
   if (dPointer !== null || (e.pointerType === 'touch' && penSeen) || e.button > 0) return; // palm rejection once a pen is used
-  dc.setPointerCapture(e.pointerId); dPointer = e.pointerId;
+  dc.setPointerCapture(e.pointerId); dPointer = e.pointerId; dPointerType = e.pointerType;
   dCur = { w: penSize, pts: [paperPoint(e)] };
   if (dColor !== '#111') dCur.c = dColor;
   dg.save(); drawStroke(dg, dCur, dc.width); dg.restore();
@@ -1348,7 +1416,7 @@ drawer.addEventListener('pointerdown', e => {
   }
   Object.assign(backdropTap, { t: now, x: e.clientX, y: e.clientY });
 });
-drawer.addEventListener('wheel', e => e.preventDefault(), { passive: false });
+drawer.addEventListener('wheel', e => e.preventDefault(), { passive: false }); // (page never scrolls; zoom handled above)
 const relayoutPaper = () => { if (!drawer.hidden && dItem && !dCur) layoutPaper(); };
 window.addEventListener('resize', relayoutPaper);
 window.addEventListener('orientationchange', () => setTimeout(relayoutPaper, 250));
@@ -1585,10 +1653,7 @@ function placeTools() {
   const w = v ? v.width : innerWidth, h = v ? v.height : innerHeight;
   topControls.style.transformOrigin = 'top left';
   topControls.style.transform = `translate(${x}px, ${y}px) scale(${1 / s})`;
-  penSizeEl.style.transformOrigin = 'bottom left';
-  // its CSS anchors it to the bottom of the unzoomed page; move that corner to the visible bottom
-  penSizeEl.style.transform = `translate(${x}px, ${y + h - innerHeight}px) scale(${1 / s})`;
-  if (s === 1 && !x && !y && Math.abs(h - innerHeight) < 1) { topControls.style.transform = penSizeEl.style.transform = ''; }
+  if (s === 1 && !x && !y) topControls.style.transform = '';
 }
 if (window.visualViewport) for (const t of ['resize', 'scroll']) window.visualViewport.addEventListener(t, () => { if (!topControls.hidden) placeTools(); });
 function showCanvasTools(it) {
