@@ -175,7 +175,7 @@ body{background:var(--bg);color:var(--ink);font-family:var(--f-ui);overscroll-be
 .item.cover .clip{background:#fff}
 
 /* ---------- minimal controls (eye, undo/redo, pen width) ---------- */
-#topControls{position:fixed;top:calc(env(safe-area-inset-top,0px) + 16px);right:max(16px,calc(env(safe-area-inset-right,0px) + 16px));
+#topControls{position:fixed;top:calc(env(safe-area-inset-top,0px) + 16px);left:max(16px,calc(env(safe-area-inset-left,0px) + 16px));
   display:flex;gap:10px;align-items:center;z-index:6}
 .mini-btn{width:48px;height:48px;border:0;border-radius:50%;background:var(--panel);color:var(--ink);display:grid;place-items:center;
   box-shadow:var(--shadow);cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent;padding:0}
