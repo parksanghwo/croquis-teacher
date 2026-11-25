@@ -1,6 +1,9 @@
 // Practice photos from Pinterest for a common-feature circle:
-// 1. the model (OPENAI_MODEL, default gpt-6-luna) searches the web, limited to pinterest.com,
-//    for pin pages that fit the circle's "next practice photo" condition;
+// 0. the model looks at the reference photos the croquis were drawn from and works back to a
+//    few very short search words ("kneeling pose side"), since long descriptive searches
+//    find little on Pinterest;
+// 1. each short query is searched on the web, limited to pinterest.com, for pin pages
+//    (the long condition-based search is only a last resort);
 // 2. the server opens each pin page and takes its preview image (og:image);
 // 3. the model looks at the candidates and keeps the ones that fit; up to 4 are saved.
 // Only Pinterest hosts are ever fetched (PINTEREST_HOSTS), so the server can't be pointed
@@ -9,7 +12,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
-import { board, persist, imageUrl, UPLOAD_DIR } from './store.js';
+import { board, persist, imageUrl, imagePath, UPLOAD_DIR } from './store.js';
 import { aiConfig } from './ai.js';
 
 const textModel = () => process.env.OPENAI_MODEL || 'gpt-6-luna';
@@ -64,24 +67,102 @@ const PIN_SCHEMA = {
   },
 };
 
-/** Step 1: pin pages (with a one-line practice note each) from a web search limited to Pinterest. */
-async function searchPinPages(feature) {
-  const table = `| 공통 오류 패턴 | 다음 연습 사진의 조건 |\n|---|---|\n| ${feature.name} | ${feature.practice || feature.name} |`;
+/* ---------- step 0: short search words, worked back from the reference photos ---------- */
+
+/** The photos the group's croquis were drawn from (the start of each overlay's arrow). */
+function referencePhotos(memberIds) {
+  const out = [];
+  for (const id of memberIds || []) {
+    const link = Object.values(board.links).find(l => l.overlay === id);
+    const photo = link && board.items[link.from];
+    if (photo?.image && board.images[photo.image] && !out.includes(photo.image)) out.push(photo.image);
+  }
+  return out.slice(0, 4);
+}
+
+export const QUERY_PROMPT = `첨부한 사진들은 학생이 크로키를 그린 원본 사진입니다. 아래 공통 오류를 연습할 실사 사진을 핀터레스트에서 찾으려 합니다. 핀터레스트 검색창에 그대로 넣을 아주 짧은 검색어를 만드세요.
+
+- 검색어는 2~3단어. 문장, 조사, 꾸미는 말을 나열하지 말고 핵심 단어만 쓰세요. 예: kneeling pose, crouching pose side, 앉은 포즈
+- 원본 사진의 자세·각도·구도를 보고 역산해, 다른 사람이 비슷한 자세를 취한 사진이 나올 단어를 고르세요. 예: 한쪽 무릎을 꿇고 앉은 측면 사진 → kneeling pose side
+- 필요하면 오류 부위가 잘 보이게 하는 단어를 하나만 더하세요. 예: arms down, head down, full body
+- 실사 사진이 나오도록 pose, pose reference, model pose 같은 말을 붙여도 좋습니다.
+- 영어 검색어 3개와 한국어 검색어 1개, 넓은 것부터 좁은 순서로 주세요.`;
+
+const QUERY_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['queries'],
+  properties: { queries: { type: 'array', items: { type: 'string' } } },
+};
+
+/** Very short Pinterest search words for a feature (3–4 of them). */
+async function planQueries(feature, memberIds) {
+  const content = [{ type: 'input_text', text: `${QUERY_PROMPT}\n\n공통 오류 패턴: ${feature.name}\n다음 연습 사진의 조건: ${feature.practice || feature.name}` }];
+  for (const id of referencePhotos(memberIds)) {
+    try {
+      const small = await sharp(imagePath(id)).rotate().resize({ width: 512, height: 512, fit: 'inside' }).jpeg({ quality: 80 }).toBuffer();
+      content.push({ type: 'input_image', image_url: `data:image/jpeg;base64,${small.toString('base64')}`, detail: 'low' });
+    } catch {}
+  }
+  try {
+    const data = await responses({
+      model: textModel(),
+      input: [{ role: 'user', content }],
+      text: { format: { type: 'json_schema', name: 'search_queries', schema: QUERY_SCHEMA, strict: true } },
+    }, 60_000);
+    const qs = JSON.parse(outputText(data)).queries
+      .map(q => String(q).replace(/["'“”‘’]/g, '').replace(/\s+/g, ' ').trim().split(' ').slice(0, 4).join(' '))
+      .filter(Boolean);
+    if (qs.length) return [...new Set(qs)].slice(0, 4);
+  } catch (err) { console.error('[pins] queries:', err.message); }
+  return ['pose reference full body'];
+}
+
+/** Pin pages for one short query. */
+async function searchOneQuery(q, feature) {
   const data = await responses({
     model: textModel(),
     tools: [{ type: 'web_search', filters: { allowed_domains: ['pinterest.com'] } }],
-    // the user's prompt as written, the table it refers to, and how many candidates to send
-    // (a few are dropped later when the photos are checked)
-    input: `${PIN_PROMPT}\n\n${table}\n\n후보 핀은 서로 다른 것으로 8개까지 주세요.`,
+    input: `핀터레스트(pinterest.com)에서 "${q}" 를 검색하세요. 검색어를 길게 늘리거나 바꾸지 말고 이 짧은 검색어 그대로 쓰세요.
+검색 결과에서 개별 핀(주소에 /pin/ 이 들어간 페이지)을 서로 다른 것으로 6개까지 고르세요. 검색 결과 페이지나 보드 링크는 빼세요.
+사람이 찍힌 실사 사진 핀만 고르고, 그림·일러스트·여러 장을 이어 붙인 이미지는 빼세요.
+핀마다 "${feature.name}" 오류를 고치려면 그 사진의 어느 부분을 보고 연습하면 되는지 한 문장을 적으세요.`,
     text: { format: { type: 'json_schema', name: 'pinterest_pins', schema: PIN_SCHEMA, strict: true } },
-  }, 180_000);
+  }, 120_000);
+  return pinsFrom(data);
+}
+
+/** Pin links (+ notes) in a web-search answer: the JSON list and the cited pages. */
+function pinsFrom(data) {
   const notes = new Map();
   try {
     for (const p of JSON.parse(outputText(data)).pins) notes.set(p.url.replace(/[?#].*$/, ''), String(p.note || '').slice(0, 200));
   } catch {}
   const urls = [...new Set([...notes.keys(), ...citedUrls(data).map(u => u.replace(/[?#].*$/, ''))])]
     .filter(u => allowedUrl(u) && /\/pin\//.test(u));   // individual pins only: no search or board links
-  return urls.slice(0, 8).map(url => ({ url, note: notes.get(url) || '' }));
+  return urls.map(url => ({ url, note: notes.get(url) || '' }));
+}
+
+/** Step 1: pin pages from short searches (the long search with the condition table as a last resort). */
+async function searchPinPages(feature, memberIds) {
+  const queries = await planQueries(feature, memberIds);
+  console.log(`[pins] ${feature.name}: search words ${queries.map(q => `"${q}"`).join(', ')}`);
+  const found = await Promise.allSettled(queries.map(q => searchOneQuery(q, feature)));
+  const seen = new Set(), pages = [];
+  // take turns between the queries so each contributes, broad first
+  const lists = found.map(r => r.status === 'fulfilled' ? r.value : []);
+  for (let i = 0; i < 8 && pages.length < 12; i++) for (const l of lists) if (l[i] && !seen.has(l[i].url)) { seen.add(l[i].url); pages.push(l[i]); }
+  const failed = found.filter(r => r.status === 'rejected');
+  if (failed.length) console.error('[pins] search:', failed.map(r => r.reason.message).join(' / '));
+  if (pages.length) return { pages, queries };
+  if (failed.length === found.length) throw failed[0].reason;
+  // last resort: the long search with the condition table
+  const table = `| 공통 오류 패턴 | 다음 연습 사진의 조건 |\n|---|---|\n| ${feature.name} | ${feature.practice || feature.name} |`;
+  const data = await responses({
+    model: textModel(),
+    tools: [{ type: 'web_search', filters: { allowed_domains: ['pinterest.com'] } }],
+    input: `${PIN_PROMPT}\n\n${table}\n\n후보 핀은 서로 다른 것으로 8개까지 주세요.`,
+    text: { format: { type: 'json_schema', name: 'pinterest_pins', schema: PIN_SCHEMA, strict: true } },
+  }, 180_000);
+  return { pages: pinsFrom(data).slice(0, 8), queries };
 }
 
 /** The pin's picture address: og:image / twitter:image, else the first full-size pinimg.com
@@ -157,12 +238,12 @@ async function saveImage(c) {
 }
 
 /** Up to `count` Pinterest photos for a feature → [{ id, url, width, height, source }]. */
-export async function findPinPhotos(feature, count = 4) {
+export async function findPinPhotos(feature, count = 4, memberIds = []) {
   const started = Date.now();
-  let pages;
-  try { pages = await searchPinPages(feature); }
-  catch (err) { throw new Error(err.name === 'TimeoutError' ? 'Pinterest 검색이 3분 안에 끝나지 않았습니다' : `Pinterest 검색 오류: ${err.message}`); }
-  if (!pages.length) throw new Error('웹 검색에서 개별 핀 링크를 찾지 못했습니다');
+  let pages, queries;
+  try { ({ pages, queries } = await searchPinPages(feature, memberIds)); }
+  catch (err) { throw new Error(err.name === 'TimeoutError' ? 'Pinterest 검색이 시간 안에 끝나지 않았습니다' : `Pinterest 검색 오류: ${err.message}`); }
+  if (!pages.length) throw new Error(`검색어 ${queries.map(q => `"${q}"`).join(', ')}로 개별 핀을 찾지 못했습니다`);
   const settled = await Promise.allSettled(pages.map(pinImage));
   const got = settled.filter(r => r.status === 'fulfilled').map(r => r.value);
   if (!got.length) {

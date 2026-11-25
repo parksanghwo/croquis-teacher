@@ -312,7 +312,7 @@ api.post('/groups/:id/pins', async (req, res) => {
   const f = g && (g.features || []).find(x => x.name === req.body?.name);
   if (!f) return res.status(404).json({ error: '공통 특징을 찾을 수 없습니다' });
   if (!aiEnabled()) return res.status(400).json({ error: 'Pinterest 검색에는 OpenAI API 키가 필요합니다' });
-  try { res.json({ photos: await findPinPhotos(f, 4) }); }
+  try { res.json({ photos: await findPinPhotos(f, 4, g.members) }); }
   catch (err) { console.error('[pins]', err.message); res.status(502).json({ error: err.message }); }
 });
 
