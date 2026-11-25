@@ -377,12 +377,14 @@ function groupBox(g) {
 }
 function renderGroups() {
   const keep = new Set();
+  const placed = []; // groups already laid out: a later group whose rows overlap goes to their right
   for (const g of groups) {
     const bx = groupBox(g);
     if (!bx) continue;
     keep.add(g.id);
     const H = bx.B - bx.T, gap = Math.max(30, H * 0.05), bulge = Math.max(30, H * 0.08);
-    const x0 = bx.R + gap;
+    let x0 = bx.R + gap;
+    for (const q of placed) if (q.T < bx.B && q.B > bx.T) x0 = Math.max(x0, q.right + gap);
     // the bracket ")" — control point at twice the bulge puts its middle `bulge` to the right
     let el = linksSvg.querySelector(`g[data-gid="${g.id}"]`);
     if (!el) { el = document.createElementNS(SVGNS, 'g'); el.dataset.gid = g.id; el.setAttribute('class', 'grp'); linksSvg.appendChild(el); }
@@ -398,15 +400,21 @@ function renderGroups() {
     if (!box) { box = document.createElement('div'); box.className = 'bubbles'; box.dataset.gid = g.id; world.appendChild(box); }
     box.classList.toggle('sel', selGroup === g.id);
     const fs = g.features || [];
-    const sig = JSON.stringify(fs.map(f => [f.name, f.drawings.length]));
+    const sig = JSON.stringify(fs.map(f => [f.name, f.drawings.length, f.practice || '']));
     if (box.dataset.sig !== sig) {
       box.dataset.sig = sig;
       box.innerHTML = '';
       for (const f of fs) {
         const b = document.createElement('div');
         b.className = 'bubble';
-        b.textContent = f.name;                              // model text: never markup
-        b.title = `${f.type ? f.type + ' · ' : ''}${f.drawings.join(', ')}`;
+        // model text: set as text, never markup
+        const name = document.createElement('span'); name.className = 'bubble-name'; name.textContent = f.name;
+        b.appendChild(name);
+        if (f.practice) {
+          const tip = document.createElement('span'); tip.className = 'bubble-practice'; tip.textContent = f.practice;
+          b.appendChild(tip);
+        }
+        b.title = `${f.drawings.length}장: ${f.drawings.join(', ')}${f.practice ? '\n다음 연습: ' + f.practice : ''}`;
         box.appendChild(b);
       }
     }
@@ -419,8 +427,9 @@ function renderGroups() {
       const col = i % 2, row = Math.floor(i / 2);
       const cx = x0 + bulge + gap + D * 0.55 + col * D * 0.95;
       const cy = bx.T + D * 0.55 + row * D * 1.0 + col * D * 0.5;
-      Object.assign(b.style, { left: cx - dia / 2 + 'px', top: cy - dia / 2 + 'px', width: dia + 'px', height: dia + 'px', fontSize: Math.max(10, dia * 0.095) + 'px' });
+      Object.assign(b.style, { left: cx - dia / 2 + 'px', top: cy - dia / 2 + 'px', width: dia + 'px', height: dia + 'px', fontSize: Math.max(10, dia * 0.085) + 'px' });
     });
+    placed.push({ T: bx.T, B: bx.B, right: x0 + bulge + gap + (fs.length > 1 ? D * 2.05 : fs.length ? D * 1.1 : 0) });
   }
   for (const el of [...linksSvg.querySelectorAll('g[data-gid]')]) if (!keep.has(el.dataset.gid)) el.remove();
   for (const el of [...world.querySelectorAll('.bubbles')]) if (!keep.has(el.dataset.gid)) el.remove();
@@ -447,7 +456,7 @@ async function makeGroup(ids) {
   try {
     await flushSave(); // the server reads the overlays (and their red marks) it has stored
     const g = await api.createGroup(ids);
-    groups = groups.filter(x => x !== tmp);
+    groups = groups.filter(x => x !== tmp && !(x.id !== g.id && x.members.every(m => ids.includes(m))));
     upsertGroup(g);
   } catch (err) {
     tmp.pending = false;
