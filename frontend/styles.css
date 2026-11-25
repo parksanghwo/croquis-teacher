@@ -248,3 +248,9 @@ body{background:var(--bg);color:var(--ink);font-family:var(--f-ui);overscroll-be
 /* the overlay being edited (double-click): clear outline, drawing cursor */
 .item.focused{outline:calc(3px * var(--inv)) solid var(--accent);outline-offset:calc(3px * var(--inv));cursor:crosshair}
 .item.focused .h,.item.focused .k{display:none!important}
+
+/* full-screen canvas: the old tool bar is replaced by the minimal tools */
+#drawBar{display:none!important}
+#topControls,#penSize{z-index:45}
+#cmpBtn[aria-pressed="true"]{color:#e0262b}
+#cmpBtn[aria-pressed="true"] svg{stroke-width:2.4}

@@ -1046,7 +1046,8 @@ const typing = () => { const a = document.activeElement; return a && (a.tagName 
 window.addEventListener('keydown', e => {
   if (!drawer.hidden) {
     const k = e.key.toLowerCase();
-    if (e.key === 'Escape' || e.key === 'Enter') closeDrawer();
+    if (e.key === 'Escape') closeDrawer();
+    else if (e.key === 'Enter' && dItem && dItem.layers) cmpBtn.click(); // same as on the board: compare
     else if ((e.ctrlKey || e.metaKey) && (k === 'y' || (k === 'z' && e.shiftKey))) redoDraw();
     else if ((e.ctrlKey || e.metaKey) && k === 'z') undoDraw();
     else if (e.key === 'Tab' || e.key === ' ') return;
@@ -1158,7 +1159,7 @@ vp.addEventListener('dblclick', e => {
   }
   if (it && isOverlay(it)) {
     if (!it.layers) { upgradeOverlay(it); return; }
-    enterFocus(it); // while editing, a double-click is just drawing: leave with Esc or a click elsewhere
+    openDrawer(it); // fills the screen; the tools appear there
   }
   else if (it && !it.image) openDrawer(it);
   else if (it) openLightbox(it);
@@ -1188,7 +1189,10 @@ const redrawPaper = () => renderStrokes(dg, dStrokes, dc.width);
 function rectTransform(r) { // transform that maps the full paper onto rect r (screen)
   return `translate(${r.left - paperRect.x}px,${r.top - paperRect.y}px) scale(${r.width / paperRect.w},${r.height / paperRect.h})`;
 }
-function syncUndo() { undoBtn.disabled = !dUndo.length; redoBtn.disabled = !dRedo.length; }
+function syncUndo() {
+  undoBtn.disabled = !dUndo.length; redoBtn.disabled = !dRedo.length;
+  if (!drawer.hidden) { undoEl.disabled = !dUndo.length; redoEl.disabled = !dRedo.length; } // the canvas' own history
+}
 function setPen(v) {
   penSize = v;
   if (typeof showPen === 'function') try { showPen(); } catch {}
@@ -1232,7 +1236,7 @@ function openDrawer(it) {
   else if (it.image) { paperImg.src = it.url; paperImg.hidden = false; } else { paperImg.hidden = true; paperImg.removeAttribute('src'); }
   select([it.id]);
   drawer.hidden = false; drawer.classList.add('enter');
-  layoutPaper(); setPen(penSize); syncUndo();
+  layoutPaper(); setPen(penSize); showCanvasTools(it); syncUndo();
   const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
   if (!reduce) {
     paper.style.transition = 'none';
@@ -1249,7 +1253,8 @@ function closeDrawer() {
   const changed = JSON.stringify(it.strokes || []) !== JSON.stringify(dStrokes);
   if (dStrokes.length) it.strokes = dStrokes; else delete it.strokes;
   if (changed) { fillContent(it, it.el); refreshOverlaysFor(it.id); scheduleSave(); recordStrokes(it, it._drawBefore || []); scheduleReview(it); }
-  const finish = () => { drawer.hidden = true; paper.style.transform = 'none'; dItem = null; };
+  hideCanvasTools();
+  const finish = () => { drawer.hidden = true; paper.style.transform = 'none'; dItem = null; syncInkButtons(); };
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return finish();
   drawer.classList.add('enter');
   paper.style.transform = rectTransform(it.el.getBoundingClientRect());
@@ -1503,43 +1508,48 @@ window.addEventListener('pointercancel', tapEnd, true);
 // keep Safari from zooming the page itself
 document.addEventListener('gesturestart', e => e.preventDefault());
 
-/* eye: show / hide the photo line art of the overlay being edited */
-const eyeBtn = document.getElementById('eyeBtn');
-function syncEye() {
-  const it = focusId && byId(focusId);
-  eyeBtn.setAttribute('aria-pressed', String(!(it && it.refOff)));
-}
-eyeBtn.onclick = () => {
-  const it = focusId && byId(focusId);
-  if (!it) return;
-  it.refOff = !it.refOff; layout(it);
-  syncEye(); scheduleSave();
-};
-
-/* ---------- focus mode: double-click one overlay to edit it ---------- */
-// The eye, undo/redo and pen width only appear while one overlay is being edited, and act
-// on that overlay alone. Pen width is the exception: once changed it stays for every canvas.
-// While editing, the mouse draws on that overlay too (the Pencil draws anywhere).
-let focusId = null;
+/* ---------- full-screen canvas: the only place the tools appear ---------- */
+// Double-click (finger double-tap) an overlay: it fills the screen as before, and only then
+// do the eye, compare, undo/redo and pen width appear, acting on that canvas alone.
+// Pen width is the exception: once changed it stays for every canvas.
+let focusId = null; // (board-level edit mode was replaced by the full-screen canvas)
 const lastItemTap = { id: null, t: 0 };
 const topControls = document.getElementById('topControls'), penSizeEl = document.getElementById('penSize');
-function enterFocus(it) {
-  if (focusId === it.id) return;
-  exitFocus();
-  focusId = it.id;
-  select([it.id]);
-  it.el.classList.add('focused');
+const eyeBtn = document.getElementById('eyeBtn'), cmpBtn = document.getElementById('cmpBtn');
+function enterFocus(it) { openDrawer(it); }
+function exitFocus() {}
+function showCanvasTools(it) {
   topControls.hidden = false; penSizeEl.hidden = false;
-  syncEye(); syncInkButtons();
+  eyeBtn.hidden = cmpBtn.hidden = !it.layers;   // an empty frame has no photo line art
+  syncEye();
 }
-function exitFocus() {
-  if (!focusId) return;
-  const it = byId(focusId);
-  if (it && it.el) it.el.classList.remove('focused');
-  focusId = null;
-  topControls.hidden = true; penSizeEl.hidden = true;
-  syncInkButtons();
+function hideCanvasTools() { topControls.hidden = true; penSizeEl.hidden = true; }
+function syncEye() {
+  const it = dItem;
+  eyeBtn.setAttribute('aria-pressed', String(!(it && it.refOff)));
+  cmpBtn.setAttribute('aria-pressed', String(!!(it && it.compare)));
 }
+/** Repaint the full-screen paper from the canvas' layers (after the eye or compare changes). */
+async function refreshPaper() {
+  const it = dItem;
+  if (!it || !it.layers) return;
+  const u = await layeredPreview(it);
+  if (dItem === it) paperImg.src = u;
+}
+eyeBtn.onclick = () => {
+  const it = dItem;
+  if (!it || !it.layers) return;
+  it.refOff = !it.refOff; layout(it);
+  syncEye(); refreshPaper(); scheduleSave();
+};
+cmpBtn.onclick = async () => {
+  const it = dItem;
+  if (!it || !it.layers) return;
+  it.compare = !it.compare;
+  syncEye();
+  await refreshCompare(it, true);   // red where the croquis strays from the line art
+  syncEye(); refreshPaper(); scheduleSave();
+};
 
 /* pen width: the tapered slider (1–20) is the pen width in thousandths of the frame width */
 const penRange = document.getElementById('penRange'), penVal = document.getElementById('penVal');
